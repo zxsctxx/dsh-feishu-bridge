@@ -78,10 +78,10 @@ function makeManager(configOverrides: Partial<BridgeConfig> = {}) {
 }
 
 describe("DshSessionManager 预设解析", () => {
-  it("config.preset 未设时回落宿主默认（source=host）", () => {
+  it("config.preset 未设时不自动跟随宿主默认（source=host，presetId undefined）", () => {
     const { manager, dir } = makeManager();
     const current = manager.currentPreset("oc_a");
-    expect(current).toEqual({ presetId: "minimal", source: "host" });
+    expect(current).toEqual({ presetId: undefined, source: "host" });
     rmSync(dir, { recursive: true, force: true });
   });
 
