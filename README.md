@@ -94,7 +94,10 @@ dsh --profile web --patch /path/to/dsh-feishu-bridge/feishu.patch.yml
 | `domain` | `feishu` | `feishu` 或 `lark` |
 | `provider` / `model` | 宿主默认 | LLM 路由；缺省沿用宿主默认模型 |
 | `preset` | 宿主默认 | Agent preset id（工具集/prompt 等）；可用 `/preset` 命令运行时覆盖（持久化） |
-| `cwd` | `process.cwd()` | Agent 工作目录 |
+| `cwd` | `process.cwd()` | 旧版兼容默认 Agent 工作目录；未配置命名工作区时继续使用 |
+| `workspaces` | `[]` | V1 命名工作区列表，按 chat 独立选择 |
+| `defaultWorkspace` | 未设置 | 默认工作区 ID，优先级低于 chat 选择 |
+| `workspaceAdminOpenIds` | `[]` | 可切换工作区的用户；未配置时仅允许私聊切换 |
 | `registerBridgeTools` | `true` | 是否把飞书工具注册进每个 chat 的 agent |
 | `flushIntervalMs` | 200 | 流式刷新节流间隔(ms) |
 | `showThinking` | `false` | 默认不展示推理正文 |
@@ -116,6 +119,28 @@ dsh --profile web --patch /path/to/dsh-feishu-bridge/feishu.patch.yml
 > 说明：`maxQueue` / `processingTimeoutMs` 在当前版本存在但**未启用**（保留兼容）。
 
 全部字段与默认值见 `src/config.ts` 的 Schema 注释。
+
+### V1 命名工作区配置
+
+V1 只允许切换配置中已注册的目录，不接受飞书消息中的任意绝对路径。工作区路径应写入 profile 私有配置，不要提交到公开仓库：
+
+```yaml
+workspaces:
+  - id: bridge
+    title: Feishu Bridge
+    path: C:/projects/dsh-feishu-bridge
+  - id: dsh
+    title: DeepSeek Harness
+    path: C:/projects/deepseek-harness
+
+defaultWorkspace: bridge
+workspaceAdminOpenIds:
+  - ou_xxx
+```
+
+生效优先级为：**当前 chat 选择 > `defaultWorkspace` > 旧 `cwd` > `process.cwd()`**。工作区选择保存到 `~/.dsh-feishu-bridge/workspace-prefs.json`，只保存 workspace ID，不保存路径或凭据。
+
+切换工作区会为当前 chat 创建新的 DSH session；旧 session 不删除，可通过 `/resume` 恢复。桥不会调用全局 `process.chdir()`，因此不同 chat 可以安全使用不同目录。
 
 ### 如何配置 allowlist 才能对话
 
@@ -144,7 +169,10 @@ dsh --profile web --patch /path/to/dsh-feishu-bridge/feishu.patch.yml
 | `/queue` | 查看队列状态 |
 | `/model` | 查看/切换模型（`/model deepseek/deepseek-chat`，fork 重建会话） |
 | `/preset` | 查看/切换 Agent 预设（`/preset code`；`/preset default code` 设全局默认；`/preset default clear` 清除） |
-| `/status` | 查看 DSH 状态（会话/模型/预设/token 统计） |
+| `/workspace` | 查看当前工作区与已注册列表 |
+| `/workspace use <id>` | 切换当前 chat 工作区（新建 session） |
+| `/workspace reset` | 清除当前 chat 选择，恢复默认工作区 |
+| `/status` | 查看 DSH 状态（会话/模型/预设/token/工作区统计） |
 | `/feishu status` / `monitor [reset]` / `config` / `doctor` / `help` | 飞书连接管理（配置改动由 DSH 自动热重载，无需手动触发） |
 | `/help` | 显示帮助 |
 

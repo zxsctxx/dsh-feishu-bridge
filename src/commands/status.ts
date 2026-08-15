@@ -39,7 +39,9 @@ export const statusCommand: CommandHandler = {
       const billedInput = usage.input + usage.cacheRead + usage.cacheWrite;
       reply += `\n- Tokens: in ${billedInput} / out ${usage.output} / cacheR ${usage.cacheRead} / cacheW ${usage.cacheWrite}`;
     }
-    reply += `\n- 工作区: ${status.cwd ?? "未知"}`;
+    reply += `\n- 工作区: ${status.workspaceTitle ?? "默认工作区"} [${status.workspaceId ?? "default"}]`;
+    reply += `\n- 工作区路径: ${status.cwd ?? "未知"}`;
+    if (status.workspaceSource) reply += `\n- 工作区来源: ${status.workspaceSource}`;
     return reply;
   },
 };
@@ -102,6 +104,7 @@ export const helpCommand: CommandHandler = {
       "  /model     - 查看/切换模型（如 /model deepseek/deepseek-chat）",
       "  /reasoning - 查看/切换思考强度（如 /reasoning high；/reasoning default 重置）",
       "  /preset    - 查看/切换 Agent 预设（/preset [id]；/preset default [id] 设全局默认）",
+      "  /workspace - 查看/切换工作区（/workspace use <id>）",
       "  /status    - 查看 DSH 状态",
       "  /help      - 显示帮助",
       "",

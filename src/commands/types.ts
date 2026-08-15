@@ -16,6 +16,10 @@ import type { DshSessionManager } from "../dsh/session-manager.js";
 export interface CommandContext {
   /** 命令来源的飞书会话 */
   readonly chatId: string;
+  /** 触发命令的用户 open_id，用于工作区权限判断 */
+  readonly senderOpenId: string;
+  /** 会话类型；群聊切换工作区需要显式管理员配置 */
+  readonly chatType: "p2p" | "group";
   /** 触发命令的消息 id，用于回复 */
   readonly msgId: string;
   /** 命令名后的参数原文（已去掉首尾空白） */

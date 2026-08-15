@@ -10,6 +10,7 @@ import { newCommand, resumeCommand } from "./session.js";
 import { modelCommand, queueCommand, reasoningCommand, stopCommand } from "./control.js";
 import { presetCommand } from "./preset.js";
 import { feishuCommand, helpCommand, statusCommand } from "./status.js";
+import { workspaceCommand } from "./workspace.js";
 
 export * from "./types.js";
 
@@ -22,6 +23,7 @@ const HANDLERS: CommandHandler[] = [
   modelCommand,
   reasoningCommand,
   presetCommand,
+  workspaceCommand,
   statusCommand,
   helpCommand,
 ];

@@ -15,7 +15,7 @@
  *   agents.get → agents.resume → agents.create，并支持 agent-presets 挂载。
  */
 import { createHash, randomUUID } from "node:crypto";
-import { SessionId, type SessionEvent, type UserMessage } from "@deepseek-ai/dsh-session";
+import { SessionId, type SessionEvent, type SessionHeader, type UserMessage } from "@deepseek-ai/dsh-session";
 import type { Context } from "@deepseek-ai/cordis";
 import { createUserMessage, ReasoningEffortId, type ContentBlock } from "@deepseek-ai/dsh-llm";
 import { installModelSelection, type Agent, type AgentHandle, type AgentSetup } from "@deepseek-ai/dsh-agent";
@@ -23,6 +23,8 @@ import type { BridgeConfig } from "../config.js";
 import type { Logger } from "../types.js";
 import { ModelResolver, type ModelRoute } from "./model-resolver.js";
 import { PresetPrefsStore } from "./preset-prefs.js";
+import { WorkspaceResolver, type EffectiveWorkspace, type WorkspaceInfo } from "./workspace.js";
+import { SessionOwnershipStore } from "./session-owners.js";
 import { streamMetricsFromEvents } from "../session/usage.js";
 import type {
   AgentPresetsLike,
@@ -34,7 +36,7 @@ import type {
 
 /** 会话持久化服务（/resume 列表用） */
 interface SessionPersistenceLike {
-  list(signal?: AbortSignal): Promise<Array<{ id: string; meta?: Record<string, unknown> }>>;
+  list(signal?: AbortSignal): Promise<SessionHeader[]>;
 }
 
 /** 会话 fork 能力（切换模型用，可选） */
@@ -48,6 +50,10 @@ export class DshSessionManager {
   private readonly modelResolver: ModelResolver;
   /** 预设偏好持久化（per-chat + 全局默认），运行时命令可改 */
   private readonly presetPrefs: PresetPrefsStore;
+  /** V1 工作区注册与 per-chat 选择 */
+  private readonly workspaces: WorkspaceResolver;
+  /** /resume 的 per-chat session 归属索引 */
+  private readonly sessionOwners: SessionOwnershipStore;
   /** 本插件管理过的 sessionId 集合：/new、/model fork 后旧会话的
    *  turn/end（封口事件）仍会到达，adapter 据此决定是否处理 */
   private readonly ownedSessionIds = new Set<string>();
@@ -75,12 +81,22 @@ export class DshSessionManager {
     private readonly setupExtra: (agentCtx: Context, chatId: string) => void = () => {},
     /** 预设偏好文件路径覆盖（仅供测试注入临时路径，避免污染用户真实偏好） */
     presetPrefsPath?: string,
+    /** 工作区偏好文件路径覆盖（仅供测试注入临时路径） */
+    workspacePrefsPath?: string,
+    /** session 归属文件路径覆盖（仅供测试注入临时路径） */
+    sessionOwnersPath?: string,
   ) {
     this.modelResolver = new ModelResolver(ctx, config, logger);
     this.presetPrefs = new PresetPrefsStore(
       config.debug ? (msg) => this.logger?.debug(msg) : undefined,
       presetPrefsPath,
     );
+    this.workspaces = new WorkspaceResolver(
+      config,
+      workspacePrefsPath,
+      (message) => this.logger.warn(message),
+    );
+    this.sessionOwners = new SessionOwnershipStore(sessionOwnersPath);
   }
 
   /** chat 对应的会话 key（per-chat 隔离） */
@@ -100,8 +116,14 @@ export class DshSessionManager {
   }
 
   /** 记录一个本插件管理的 sessionId */
-  private registerSession(sessionId: SessionId): void {
+  private registerSession(sessionId: SessionId, chatId?: string): void {
     this.ownedSessionIds.add(sessionId);
+    if (chatId) this.sessionOwners.add(this.sessionKeyFor(chatId), sessionId);
+  }
+
+  private ownsSession(chatId: string, sessionId: string): boolean {
+    return sessionId === this.sessionIdFor(chatId)
+      || this.sessionOwners.has(this.sessionKeyFor(chatId), sessionId);
   }
 
   /** 指定 chat 的活跃 agent 记录（可能为 null） */
@@ -147,12 +169,59 @@ export class DshSessionManager {
     return this.modelResolver.getEffectiveRoute(this.sessionKeyFor(chatId));
   }
 
+  listWorkspaces(): WorkspaceInfo[] {
+    return this.workspaces.list();
+  }
+
+  getEffectiveWorkspace(chatId: string): EffectiveWorkspace {
+    return this.workspaces.getEffective(chatId);
+  }
+
+  isWorkspaceAdmin(senderOpenId: string, chatType: "p2p" | "group"): boolean {
+    const configured = this.config.workspaceAdminOpenIds ?? [];
+    if (configured.length > 0) return configured.includes(senderOpenId);
+    return chatType === "p2p";
+  }
+
+  async switchWorkspace(chatId: string, workspaceId: string): Promise<{ changed: boolean; workspace: EffectiveWorkspace; sessionId?: SessionId }> {
+    const current = this.workspaces.getEffective(chatId);
+    const target = this.workspaces.select(chatId, workspaceId);
+    if (this.workspaces.currentSelection(chatId) === current.id && target.path === current.path) {
+      return { changed: false, workspace: target };
+    }
+    const sessionId = await this.rotateSession(chatId);
+    return { changed: true, workspace: target, sessionId };
+  }
+
+  async resetWorkspace(chatId: string): Promise<{ changed: boolean; workspace: EffectiveWorkspace; sessionId?: SessionId }> {
+    const hadSelection = this.workspaces.currentSelection(chatId) !== undefined;
+    const target = this.workspaces.reset(chatId);
+    if (!hadSelection) return { changed: false, workspace: target };
+    const sessionId = await this.rotateSession(chatId);
+    return { changed: true, workspace: target, sessionId };
+  }
+
+  private effectiveWorkspace(chatId: string): EffectiveWorkspace {
+    return this.workspaces.getEffective(chatId);
+  }
+
+  private async rotateSession(chatId: string): Promise<SessionId> {
+    const key = this.sessionKeyFor(chatId);
+    await this.disposeRecordFor(key);
+    const newId = SessionId(randomUUID());
+    this.registerSession(newId, chatId);
+    this.modelResolver.setSessionId(key, newId);
+    this.logger.info("workspace session rotated: chat=" + chatId + " -> " + newId);
+    return newId;
+  }
+
   getStatus(chatId: string): SessionStatus {
     const key = this.sessionKeyFor(chatId);
     const record = this.recordFor(chatId);
     // 模型优先显示最近一次实际请求（与页脚口径一致）；无请求时回退有效路由
     const last = this.lastRequestHeader(record);
     const route = this.getEffectiveModel(chatId);
+    const workspace = this.effectiveWorkspace(chatId);
     return {
       active: !!record,
       // 无活跃 record（如刚重启）时仍显示确定性派生的 sessionId
@@ -163,7 +232,10 @@ export class DshSessionManager {
       // record 缺失时也从偏好/配置解析当前预设
       preset: record?.agentPreset ?? this.currentPreset(chatId).presetId,
       messageCount: this.countMessages(record),
-      cwd: record?.agent.session.header?.cwd ?? this.config.cwd ?? process.cwd(),
+      cwd: record?.agent.session.header?.cwd ?? workspace.path,
+      workspaceId: workspace.id,
+      workspaceTitle: workspace.title,
+      workspaceSource: workspace.source,
     };
   }
 
@@ -401,7 +473,7 @@ export class DshSessionManager {
       sessionId: childId,
       seed,
       meta: {
-        cwd: this.config.cwd || process.cwd(),
+        cwd: this.effectiveWorkspace(chatId).path,
         parentSession: record.sessionId,
         seedLength: seed.length,
         ...(composed.agentPreset ? { agentPreset: composed.agentPreset } : {}),
@@ -410,7 +482,7 @@ export class DshSessionManager {
       ...(setup ? { setup } : {}),
     });
 
-    this.registerSession(childId);
+    this.registerSession(childId, chatId);
     this.modelResolver.setSessionId(key, childId);
 
     const oldHandle = record.handle;
@@ -534,7 +606,7 @@ export class DshSessionManager {
         const created = await this.agents.create({
           sessionId,
           meta: {
-            cwd: this.config.cwd || process.cwd(),
+            cwd: this.effectiveWorkspace(chatId).path,
             ...(agentPreset ? { agentPreset } : {}),
           },
           ...(route ? { agentOptions: route } : {}),
@@ -546,7 +618,7 @@ export class DshSessionManager {
       }
     }
 
-    this.registerSession(sessionId);
+    this.registerSession(sessionId, chatId);
 
     const record: SessionRecord = {
       sessionKey: key,
@@ -584,15 +656,28 @@ export class DshSessionManager {
     const key = this.sessionKeyFor(chatId);
     await this.disposeRecordFor(key);
     const newId = SessionId(randomUUID());
-    this.registerSession(newId);
+    this.registerSession(newId, chatId);
     this.modelResolver.setSessionId(key, newId);
     this.logger.info(`session reset: chat=${chatId} key=${key} → ${newId}`);
     return newId;
   }
 
-  /** /resume <sessionId>：释放 chat 当前 agent，恢复指定持久化会话到该 chat */
+  /** /resume <sessionId>：只恢复当前 chat 已登记且 cwd 可对齐的会话 */
   async resumeSession(chatId: string, sessionId: string): Promise<boolean> {
     const key = this.sessionKeyFor(chatId);
+    if (!this.ownsSession(chatId, sessionId)) {
+      this.logger.warn("resume denied: session does not belong to chat=" + chatId + " sessionId=" + sessionId);
+      return false;
+    }
+
+    const header = await this.findPersistedSession(sessionId);
+    const workspace = this.effectiveWorkspace(chatId);
+    if (header?.cwd && !this.workspaces.matchesPath(header.cwd, workspace.path)
+      && !this.workspaces.workspaceIdForPath(header.cwd)) {
+      this.logger.warn("resume denied: session workspace is not registered chat=" + chatId + " cwd=" + header.cwd);
+      return false;
+    }
+
     await this.disposeRecordFor(key);
     const target = SessionId(sessionId);
     try {
@@ -606,7 +691,10 @@ export class DshSessionManager {
         ...(route ? { agentOptions: route } : {}),
         ...(setup ? { setup } : {}),
       });
-      this.registerSession(target);
+      if (header?.cwd && !this.workspaces.matchesPath(header.cwd, workspace.path)) {
+        this.workspaces.adoptSessionPath(chatId, header.cwd);
+      }
+      this.registerSession(target, chatId);
       this.records.set(key, {
         sessionKey: key,
         sessionId: target,
@@ -661,7 +749,7 @@ export class DshSessionManager {
       sessionId: childId,
       seed,
       meta: {
-        cwd: this.config.cwd || process.cwd(),
+        cwd: this.effectiveWorkspace(chatId).path,
         parentSession: record.sessionId,
         seedLength: seed.length,
         ...(composed.agentPreset ? { agentPreset: composed.agentPreset } : {}),
@@ -670,7 +758,7 @@ export class DshSessionManager {
       ...(setup ? { setup } : {}),
     });
 
-    this.registerSession(childId);
+    this.registerSession(childId, chatId);
     this.modelResolver.setSessionId(key, childId);
 
     const oldHandle = record.handle;
@@ -778,16 +866,29 @@ export class DshSessionManager {
     return this.modelResolver.listProviders();
   }
 
-  /** 列出持久化会话（/resume 列表用；全局） */
-  async listPersistedSessions(): Promise<Array<{ id: string }>> {
+  /** 列出当前 chat 已登记的持久化会话；未知归属默认不展示。 */
+  async listPersistedSessions(chatId: string): Promise<Array<{ id: string }>> {
     try {
       const persistence = this.ctx.get("sessionPersistence") as unknown as SessionPersistenceLike | undefined;
       if (!persistence || typeof persistence.list !== "function") return [];
       const sessions = await persistence.list();
-      return sessions.map((s) => ({ id: s.id }));
+      return sessions
+        .filter((session) => this.ownsSession(chatId, session.id))
+        .map((session) => ({ id: session.id }));
     } catch (err) {
       this.logger.warn(`listPersistedSessions failed: ${err instanceof Error ? err.message : String(err)}`);
       return [];
+    }
+  }
+
+  private async findPersistedSession(sessionId: string): Promise<SessionHeader | undefined> {
+    try {
+      const persistence = this.ctx.get("sessionPersistence") as unknown as SessionPersistenceLike | undefined;
+      if (!persistence || typeof persistence.list !== "function") return undefined;
+      return (await persistence.list()).find((session) => session.id === sessionId);
+    } catch (err) {
+      this.logger.warn(`findPersistedSession failed: ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
     }
   }
 

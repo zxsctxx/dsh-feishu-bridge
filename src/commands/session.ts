@@ -40,7 +40,7 @@ export const resumeCommand: CommandHandler = {
     const arg = ctx.args.trim();
     let sessions: Array<{ id: string }>;
     try {
-      sessions = await ctx.manager.listPersistedSessions();
+      sessions = await ctx.manager.listPersistedSessions(ctx.chatId);
     } catch (error) {
       return `列出会话失败：${describeError(error)}`;
     }

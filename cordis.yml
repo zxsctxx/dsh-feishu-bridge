@@ -66,6 +66,13 @@
     provider: deepseek
     model: deepseek-chat
     cwd: ${DSH_CWD:-.}
+    # V1 工作区示例（按本机路径配置；生产放 profile 私有 patch 配置）
+    # workspaces:
+    #   - id: bridge
+    #     title: Feishu Bridge
+    #     path: C:/projects/dsh-feishu-bridge
+    # defaultWorkspace: bridge
+    # workspaceAdminOpenIds: [ou_xxx]
     accessPolicy: allowlist
     allowedOpenIds: []
     allowedChatIds: []

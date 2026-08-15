@@ -45,8 +45,11 @@ export interface SessionStatus {
   reasoningEffort?: string;
   preset?: string;
   messageCount?: number;
-  /** Agent 工作目录（活跃会话取 session header，否则配置值） */
+  /** Agent 工作目录（活跃会话取 session header，否则有效工作区） */
   cwd?: string;
+  workspaceId?: string;
+  workspaceTitle?: string;
+  workspaceSource?: "chat" | "default" | "legacy";
 }
 
 /** token 用量统计（/cost 用） */

@@ -47,6 +47,8 @@ function makeManager(configOverrides: Partial<BridgeConfig> = {}, agentsOverride
   const config = { ...baseConfig(), ...configOverrides };
   const dir = mkdtempSync(join(tmpdir(), "session-manager-preset-"));
   const presetPrefsPath = join(dir, "preset-prefs.json");
+  const workspacePrefsPath = join(dir, "workspace-prefs.json");
+  const sessionOwnersPath = join(dir, "session-owners.json");
   const presets: any = {
     defaultId: "minimal",
     list: async () => [
@@ -74,7 +76,7 @@ function makeManager(configOverrides: Partial<BridgeConfig> = {}, agentsOverride
     ...agentsOverrides,
   };
   const logger: any = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} };
-  const manager = new DshSessionManager(ctx, agents, config, logger, () => {}, presetPrefsPath);
+  const manager = new DshSessionManager(ctx, agents, config, logger, () => {}, presetPrefsPath, workspacePrefsPath, sessionOwnersPath);
   return { manager, dir, config };
 }
 

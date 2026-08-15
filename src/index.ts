@@ -291,7 +291,7 @@ export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void
 
     // ── 拦截斜杠命令 ──
     if (content.startsWith("/")) {
-      await handleSlashCommand(chatId, msgId, content);
+      await handleSlashCommand(chatId, msgId, content, context.senderOpenId, chatType);
       return;
     }
 
@@ -382,10 +382,18 @@ export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void
   }
 
   /** 处理从飞书发来的斜杠命令（不会发给 LLM，直接扩展层执行） */
-  async function handleSlashCommand(chatId: string, msgId: string, text: string): Promise<void> {
+  async function handleSlashCommand(
+    chatId: string,
+    msgId: string,
+    text: string,
+    senderOpenId: string,
+    chatType: "p2p" | "group",
+  ): Promise<void> {
     await dispatchCommand(
       {
         manager,
+        senderOpenId,
+        chatType,
         get client() { return client; },
         get config() { return config; },
         get streaming() { return streaming; },
