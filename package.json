@@ -1,0 +1,69 @@
+{
+  "name": "dsh-feishu-bridge",
+  "version": "0.1.0",
+  "description": "Feishu/Lark IM channel plugin for deepseek-harness (dsh) with CardKit native streaming",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "feishu",
+    "lark",
+    "cordis",
+    "plugin",
+    "chat-bridge"
+  ],
+  "license": "MIT",
+  "author": "zxsctxx",
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.64.0",
+    "js-yaml": "^4.1.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=4.0.1",
+    "@deepseek-ai/dsh-agent": ">=0.1.0-rc.6",
+    "@deepseek-ai/dsh-llm": ">=0.1.0-rc.6",
+    "@deepseek-ai/dsh-session": ">=0.1.0-rc.6",
+    "@deepseek-ai/dsh-tools": ">=0.1.0-rc.6",
+    "@deepseek-ai/schemastery": ">=3.18.1"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": { "optional": false },
+    "@deepseek-ai/dsh-agent": { "optional": false },
+    "@deepseek-ai/dsh-llm": { "optional": false },
+    "@deepseek-ai/dsh-session": { "optional": false },
+    "@deepseek-ai/dsh-tools": { "optional": false },
+    "@deepseek-ai/schemastery": { "optional": false }
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh-agent": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-llm": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-session": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-tools": "0.1.0-rc.6",
+    "@deepseek-ai/schemastery": "3.18.1",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^26.2.0",
+    "typescript": "^5.5.0",
+    "vitest": "^3.2.4"
+  },
+  "overrides": {
+    "axios": "^1.16.0",
+    "form-data": "^4.0.6",
+    "protobufjs": "^7.6.3"
+  }
+}

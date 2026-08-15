@@ -1,0 +1,72 @@
+# dsh-feishu-bridge 组合配置示例
+#
+# 运行: dsh --config ./cordis.yml  （或把插件装进 DSH profile 后按需配置）
+#
+# 环境变量:
+#   FEISHU_APP_ID       - 飞书 App ID
+#   FEISHU_APP_SECRET   - 飞书 App Secret
+#   FEISHU_DOMAIN       - feishu（国内）或 lark（海外）
+#   DEEPSEEK_API_KEY    - LLM API Key（示例用 DeepSeek）
+#   DSH_CWD             - Agent 工作目录（可选）
+
+# ── 核心 spine ──
+- id: sessions
+  name: '@deepseek-ai/dsh-session'
+
+- id: agent
+  name: '@deepseek-ai/dsh-agent'
+
+- id: agent-loop
+  name: '@deepseek-ai/dsh-agent-loop'
+
+- id: system-prompt
+  name: '@deepseek-ai/dsh-system-prompt'
+
+- id: tools
+  name: '@deepseek-ai/dsh-tools'
+
+# ── LLM 适配器 ──
+- id: llm-deepseek
+  name: '@deepseek-ai/dsh-llm-deepseek'
+  config:
+    apiKey: ${DEEPSEEK_API_KEY}
+
+# ── 执行能力（按需启用） ──
+- id: tool-bash
+  name: '@deepseek-ai/dsh-tool-bash'
+
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+
+- id: tool-web
+  name: '@deepseek-ai/dsh-tool-web'
+
+# ── 上下文管理 ──
+- id: compaction
+  name: '@deepseek-ai/dsh-compaction-basic'
+
+- id: token-meter
+  name: '@deepseek-ai/dsh-token-meter'
+
+# ── 持久化 ──
+- id: session-persistence
+  name: '@deepseek-ai/dsh-session-persistence-jsonl'
+  config:
+    root: ./.dsh-sessions
+
+# ── 飞书 IM 驱动 ──
+- id: feishu-bridge
+  name: 'dsh-feishu-bridge'
+  config:
+    appId: ${FEISHU_APP_ID}
+    appSecret: ${FEISHU_APP_SECRET}
+    domain: ${FEISHU_DOMAIN:-feishu}
+    provider: deepseek
+    model: deepseek-chat
+    cwd: ${DSH_CWD:-.}
+    accessPolicy: allowlist
+    allowedOpenIds: []
+    allowedChatIds: []
+    requireMentionInGroup: true
+    showThinking: false
+    debug: false
