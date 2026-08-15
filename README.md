@@ -86,7 +86,9 @@ dsh --profile web --patch /path/to/dsh-feishu-bridge/feishu.patch.yml
 
 ## 配置
 
-配置来源优先级：**cordis.yml config 字段 → `FEISHU_*` 环境变量**（覆盖同名项）。
+配置来源优先级：**插件 `config` 字段（即 `cordis.patch.yml` 中 `feishu-bridge` 行下的 `config`，或 cordis.yml 同名字段）→ `FEISHU_*` 环境变量（覆盖同名项）**。
+
+> `FEISHU_*` 环境变量是**可选的覆盖层**：不设置时完全以 `config` 字段为准，无需额外配置。你当前的配置（appId/appSecret/白名单等写在 patch 的 `config` 里）就是典型用法；只有在想用环境变量临时覆盖（如切换 App、调试开关）时才需要设置。
 
 | 字段 | 默认值 | 说明 |
 |---|---:|---|
