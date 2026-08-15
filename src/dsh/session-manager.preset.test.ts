@@ -178,3 +178,79 @@ describe("ensureAgent resume 分支补齐 agentOptions（回归：重启后 resu
     rmSync(dir, { recursive: true, force: true });
   });
 });
+
+describe("getStatus（/status 数据源）", () => {
+  function agentWithEvents(events: unknown[]) {
+    return {
+      status: "idle",
+      session: { events },
+      cancel: vi.fn(),
+      followup: vi.fn(),
+      whenIdle: vi.fn(),
+    };
+  }
+
+  it("取最近一次 request/header 的实际路由与思考强度", async () => {
+    const agent = agentWithEvents([
+      { type: "user/message", data: {} },
+      {
+        type: "request/header",
+        data: { header: { config: { provider: "opencode", model: "deepseek-v4-flash", reasoningEffort: "low" } } },
+      },
+      {
+        type: "request/header",
+        data: { header: { config: { provider: "deepseek-official", model: "deepseek-v4-flash", reasoningEffort: "max" } } },
+      },
+    ]);
+    const { manager, dir } = makeManager({}, { get: () => agent });
+    await manager.ensureAgent("oc_a");
+    const status = manager.getStatus("oc_a");
+    expect(status.provider).toBe("deepseek-official");
+    expect(status.model).toBe("deepseek-v4-flash");
+    expect(status.reasoningEffort).toBe("max");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("无 request/header 事件时回退有效路由且无思考强度", async () => {
+    const agent = agentWithEvents([{ type: "user/message", data: {} }]);
+    const { manager, dir } = makeManager({ provider: "p", model: "m" }, { get: () => agent });
+    await manager.ensureAgent("oc_a");
+    const status = manager.getStatus("oc_a");
+    expect(status.provider).toBe("p");
+    expect(status.model).toBe("m");
+    expect(status.reasoningEffort).toBeUndefined();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("无活跃会话时仍显示派生 sessionId、偏好预设与配置工作区（重启后直接 /status）", () => {
+    const { manager, dir } = makeManager({ cwd: "/workspace" });
+    manager.setChatPreset("oc_a", "code");
+    const status = manager.getStatus("oc_a");
+    expect(status.active).toBe(false);
+    expect(status.sessionId).toBe(manager.sessionIdFor("oc_a"));
+    expect(status.preset).toBe("code");
+    expect(status.cwd).toBe("/workspace");
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("getLatestRequestStats（footer 上下文 billed 口径）", () => {
+  it("取最近一次请求的 billed 输入（uncached + 缓存读/写）", async () => {
+    const agent = {
+      status: "idle",
+      session: {
+        events: [
+          { type: "assistant/message", data: { usage: { inputTokens: 100, cacheReadTokens: 300, cacheWriteTokens: 50 } } },
+          { type: "assistant/message", data: { usage: { inputTokens: 200, cacheReadTokens: 400, cacheWriteTokens: 100 } } },
+        ],
+      },
+      cancel: vi.fn(),
+      followup: vi.fn(),
+      whenIdle: vi.fn(),
+    };
+    const { manager, dir } = makeManager({}, { get: () => agent });
+    await manager.ensureAgent("oc_a");
+    expect(manager.getLatestRequestStats("oc_a").inputTokens).toBe(700); // 200 + 400 + 100
+    rmSync(dir, { recursive: true, force: true });
+  });
+});

@@ -148,16 +148,45 @@ export class DshSessionManager {
   }
 
   getStatus(chatId: string): SessionStatus {
+    const key = this.sessionKeyFor(chatId);
     const record = this.recordFor(chatId);
+    // 模型优先显示最近一次实际请求（与页脚口径一致）；无请求时回退有效路由
+    const last = this.lastRequestHeader(record);
     const route = this.getEffectiveModel(chatId);
     return {
       active: !!record,
-      sessionId: record?.sessionId,
-      provider: route?.provider,
-      model: route?.model,
-      preset: record?.agentPreset,
+      // 无活跃 record（如刚重启）时仍显示确定性派生的 sessionId
+      sessionId: record?.sessionId ?? this.sessionIdFor(chatId),
+      provider: last?.provider ?? route?.provider,
+      model: last?.model ?? route?.model,
+      reasoningEffort: last?.reasoningEffort,
+      // record 缺失时也从偏好/配置解析当前预设
+      preset: record?.agentPreset ?? this.currentPreset(chatId).presetId,
       messageCount: this.countMessages(record),
+      cwd: record?.agent.session.header?.cwd ?? this.config.cwd ?? process.cwd(),
     };
+  }
+
+  /** 最近一次 request/header 事件的实际请求路由（无请求时 undefined） */
+  private lastRequestHeader(
+    record: SessionRecord | null,
+  ): { provider?: string; model?: string; reasoningEffort?: string } | undefined {
+    const events = record?.agent.session.events;
+    if (!events) return undefined;
+    for (let i = events.length - 1; i >= 0; i--) {
+      const event = events[i];
+      if (event.type !== "request/header") continue;
+      const config = (event.data as { header?: { config?: { provider?: string; model?: string; reasoningEffort?: string } } })
+        .header?.config;
+      if (config) {
+        return {
+          provider: config.provider,
+          model: config.model,
+          reasoningEffort: config.reasoningEffort,
+        };
+      }
+    }
+    return undefined;
   }
 
   /** 解析模型显示名（settings.yaml name；缺省回退 model id） */
@@ -181,16 +210,20 @@ export class DshSessionManager {
     return stats;
   }
 
-  /** footer「上下文」口径：最近一次模型请求的 inputTokens + 模型广告的上下文窗口 */
+  /**
+   * footer「上下文」口径：最近一次模型请求的 billed 输入（uncached + 缓存读/写，
+   * 即本次完整 prompt 长度）+ 模型广告的上下文窗口。与「输入」字段的累计口径同源，
+   * 避免出现「输入 100K / 上下文 419」这类因只取 uncached 部分而产生的费解对比。
+   */
   getLatestRequestStats(chatId: string): { inputTokens: number; contextWindow?: number } {
     const record = this.recordFor(chatId);
     let inputTokens = 0;
     const events = record?.agent.session.events;
     if (events) {
       for (const event of events) {
-        if (event.type === "assistant/message" && event.data.usage) {
-          inputTokens = event.data.usage.inputTokens ?? 0;
-        }
+        if (event.type !== "assistant/message" || !event.data.usage) continue;
+        const u = event.data.usage;
+        inputTokens = (u.inputTokens ?? 0) + (u.cacheReadTokens ?? 0) + (u.cacheWriteTokens ?? 0);
       }
     }
     const contextWindow = record && typeof record.agent.session.requestContext === "function"

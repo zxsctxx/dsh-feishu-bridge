@@ -19,7 +19,6 @@ import { MetricsCollector } from "./monitoring/metrics.js";
 import { formatDoctor, runDoctor } from "./monitoring/doctor.js";
 import { PRODUCT_ID, PRODUCT_NAME, PRODUCT_VERSION } from "./version.js";
 import { ClarifyManager } from "./clarify/manager.js";
-import { ConfigReloadCoordinator } from "./monitoring/reload.js";
 import { warn, error, describeError } from "./log.js";
 import { MessageQueueManager, type QueuedMessage } from "./queue.js";
 import { DshSessionManager } from "./dsh/session-manager.js";
@@ -89,7 +88,6 @@ export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void
   let streaming: StreamingCardManager | null = null;
   let clarify: ClarifyManager | null = null;
   const metrics = new MetricsCollector();
-  const configReload = new ConfigReloadCoordinator();
   const queues = new MessageQueueManager({
     // per-chat 并行：每个 chat 按自己的 agent 空闲状态独立放行
     isAgentIdle: (chatId: string) => manager.isIdleFor(chatId),
@@ -125,7 +123,6 @@ export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void
       await waitAgentIdle(chatId);
       flushAllQueues();
       flashStatus(phase === "completed" ? "飞书: ✅ 完成" : "飞书: ⏹ 结束");
-      await configReload.afterSettled(hotReloadConfig);
     },
   };
   const adapter = new DshEventAdapter(manager, () => streaming, () => client, queues, config, logger, settleHooks);
@@ -278,28 +275,6 @@ export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void
     }
   }
 
-  function restartClient(): void {
-    startFeishuClient();
-  }
-
-  /**
-   * 真正热重载：重读 loader 的 profile patch 配置并让 loader 重启本插件
-   * （apply 重跑 → 新 config 生效）。restartClient 只用旧的 config 快照重建
-   * 飞书客户端，改 cordis.patch.yml 后不会生效。
-   */
-  async function hotReloadConfig(): Promise<void> {
-    const fiber = (ctx as { fiber?: unknown }).fiber as
-      | { entry?: { parent?: { tree?: { refresh?: () => Promise<void> } } } }
-      | undefined;
-    const tree = fiber?.entry?.parent?.tree;
-    if (typeof tree?.refresh !== "function") {
-      // 无 loader 树的环境（如单元测试）：退化为重建飞书客户端
-      restartClient();
-      return;
-    }
-    await tree.refresh();
-  }
-
   // ── 处理飞书入站消息 → 排队或直接处理 ────────
 
   async function handleFeishuMessage(context: InboundMessageContext): Promise<void> {
@@ -416,10 +391,8 @@ export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void
         get streaming() { return streaming; },
         get clarify() { return clarify; },
         metrics,
-        configReload,
         queues,
         prepareSessionControl: () => prepareSessionControl(chatId),
-        reloadConfig: hotReloadConfig,
         flashStatus,
         clearTaskTimeout,
       },

@@ -6,7 +6,7 @@ import { formatDoctor, runDoctor } from "../monitoring/doctor.js";
 import { PRODUCT_ID, PRODUCT_NAME, PRODUCT_VERSION } from "../version.js";
 import type { CommandContext, CommandHandler } from "./types.js";
 
-const FEISHU_USAGE = "/feishu status | monitor [reset] | config [reload] | doctor | help";
+const FEISHU_USAGE = "/feishu status | monitor [reset] | config | doctor | help";
 
 export const statusCommand: CommandHandler = {
   name: "/status",
@@ -27,11 +27,19 @@ export const statusCommand: CommandHandler = {
     else reply += "\n- 状态: 空闲";
 
     reply += `\n- 会话: ${status.sessionId?.slice(0, 8) ?? "未创建"}（${status.messageCount ?? 0} 条消息）`;
-    reply += `\n- 模型: ${status.provider && status.model ? `${status.provider}/${status.model}` : "宿主默认"}`;
+    // 思考强度口径与页脚一致：首字母大写（max → Max），off/none 视为关闭不显示
+    const effort =
+      status.reasoningEffort && status.reasoningEffort !== "off" && status.reasoningEffort !== "none"
+        ? ` ${status.reasoningEffort.charAt(0).toUpperCase()}${status.reasoningEffort.slice(1)}`
+        : "";
+    reply += `\n- 模型: ${status.provider && status.model ? `${status.provider}/${status.model}${effort}` : "宿主默认"}`;
     if (status.preset) reply += `\n- Preset: ${status.preset}`;
-    if (usage.input > 0 || usage.output > 0) {
-      reply += `\n- Tokens: in ${usage.input} / out ${usage.output} / cacheR ${usage.cacheRead} / cacheW ${usage.cacheWrite}`;
+    if (usage.input > 0 || usage.output > 0 || usage.cacheRead > 0 || usage.cacheWrite > 0) {
+      // in = billed 输入总量（含缓存命中/写入），对齐 footer 与 dsh Web 口径
+      const billedInput = usage.input + usage.cacheRead + usage.cacheWrite;
+      reply += `\n- Tokens: in ${billedInput} / out ${usage.output} / cacheR ${usage.cacheRead} / cacheW ${usage.cacheWrite}`;
     }
+    reply += `\n- 工作区: ${status.cwd ?? "未知"}`;
     return reply;
   },
 };
@@ -66,24 +74,14 @@ export const feishuCommand: CommandHandler = {
 
       case "config":
         return [
-          `Domain: ${ctx.config.domain ?? "feishu"}`,
-          `Show thinking: ${ctx.config.showThinking ?? false}`,
-          `Task timeout: ${ctx.config.taskTimeoutSec ?? 900}s`,
-          `Same-chat busy: ${ctx.config.sameChatBusyPolicy ?? "queue"}`,
-          `Access policy: ${ctx.config.accessPolicy ?? DEFAULT_ACCESS_POLICY}`,
-          `Allowed chats: ${ctx.config.allowedChatIds?.length ?? 0}`,
-          `Allowed users: ${ctx.config.allowedOpenIds?.length ?? 0}`,
+          `域名: ${ctx.config.domain ?? "feishu"}`,
+          `展示推理: ${ctx.config.showThinking ?? false}`,
+          `任务超时: ${ctx.config.taskTimeoutSec ?? 900}s`,
+          `同会话忙时策略: ${ctx.config.sameChatBusyPolicy ?? "queue"}`,
+          `访问策略: ${ctx.config.accessPolicy ?? DEFAULT_ACCESS_POLICY}`,
+          `允许的群聊数: ${ctx.config.allowedChatIds?.length ?? 0}`,
+          `允许的用户数: ${ctx.config.allowedOpenIds?.length ?? 0}`,
         ].join("\n");
-
-      case "config reload": {
-        const result = await ctx.configReload.request(
-          ctx.manager.isIdle,
-          () => ctx.reloadConfig(),
-        );
-        return result === "deferred"
-          ? "配置将在当前 Agent 处理完后重载。"
-          : "配置已重载。";
-      }
 
       default:
         return FEISHU_USAGE;

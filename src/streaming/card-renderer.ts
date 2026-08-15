@@ -378,7 +378,11 @@ function formatFooterField(id: FooterFieldId, session: CardSession): string | nu
     const hit = denom > 0 ? (cacheRead / denom) * 100 : 0;
     return `缓存命中 ${Math.round(hit)}%`;
   }
-  if (id === "input") return `输入 ${compactNumber(f.inputTokens)} tok`;
+  if (id === "input") {
+    // 会话 billed 输入总量（含缓存命中/写入），对齐 dsh Web「总输入」口径
+    const billed = (f.inputTokens ?? 0) + (f.cacheRead ?? 0) + (f.cacheWrite ?? 0);
+    return `输入 ${compactNumber(billed)} tok`;
+  }
   if (id === "output") return `输出 ${compactNumber(f.outputTokens)} tok`;
   if (id === "model") {
     if (!f.model) return "未知模型";
@@ -391,9 +395,9 @@ function formatFooterField(id: FooterFieldId, session: CardSession): string | nu
   }
   if (id === "api_calls") return `API ${f.apiCalls}`;
   if (id === "tokens") {
-    const input = f.inputTokens ?? 0;
+    const billedInput = (f.inputTokens ?? 0) + (f.cacheRead ?? 0) + (f.cacheWrite ?? 0);
     const output = f.outputTokens ?? 0;
-    const parts = [`↑ ${compactNumber(input)}`, `↓ ${compactNumber(output)}`];
+    const parts = [`↑ ${compactNumber(billedInput)}`, `↓ ${compactNumber(output)}`];
     if (typeof f.reasoningTokens === "number" && f.reasoningTokens > 0) {
       parts.push(`💭 ${compactNumber(f.reasoningTokens)}`);
     }

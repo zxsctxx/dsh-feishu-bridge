@@ -41,8 +41,12 @@ export interface SessionStatus {
   sessionId?: string;
   provider?: string;
   model?: string;
+  /** 最近一次请求的思考强度（reasoningEffort，如 max/high；无请求时为 undefined） */
+  reasoningEffort?: string;
   preset?: string;
   messageCount?: number;
+  /** Agent 工作目录（活跃会话取 session header，否则配置值） */
+  cwd?: string;
 }
 
 /** token 用量统计（/cost 用） */

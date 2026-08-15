@@ -10,7 +10,6 @@ import type { BridgeConfig } from "../config.js";
 import type { StreamingCardManager } from "../streaming/card-manager.js";
 import type { ClarifyManager } from "../clarify/manager.js";
 import type { MetricsCollector } from "../monitoring/metrics.js";
-import type { ConfigReloadCoordinator } from "../monitoring/reload.js";
 import type { MessageQueueManager } from "../queue.js";
 import type { DshSessionManager } from "../dsh/session-manager.js";
 
@@ -29,13 +28,10 @@ export interface CommandContext {
   readonly streaming: StreamingCardManager | null;
   readonly clarify: ClarifyManager | null;
   readonly metrics: MetricsCollector;
-  readonly configReload: ConfigReloadCoordinator;
   readonly queues: MessageQueueManager;
 
   /** 为 /new /resume 做前置清理：中断流式、清空队列、取消 Agent */
   prepareSessionControl(): Promise<void>;
-  /** 重新加载配置并重启客户端 */
-  reloadConfig(): Promise<void>;
   /** 短暂在状态栏闪一条提示 */
   flashStatus(text: string): void;
   /** 取消指定 chat 当前任务的硬超时 */

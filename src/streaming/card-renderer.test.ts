@@ -115,6 +115,28 @@ describe("页脚 model 字段（模型 + 思考强度）", () => {
   });
 });
 
+describe("页脚 input/output 字段（会话 billed 总量口径，对齐 dsh Web）", () => {
+  it("input 含缓存命中/写入（uncached + cacheRead + cacheWrite）", () => {
+    const s = makeSession();
+    s.footer.inputTokens = 100;
+    s.footer.cacheRead = 400;
+    s.footer.cacheWrite = 50;
+    expect(formatFooterContent(s, [["input"]])).toBe("输入 550 tok");
+  });
+
+  it("无缓存时 input 即 uncached 值", () => {
+    const s = makeSession();
+    s.footer.inputTokens = 1200;
+    expect(formatFooterContent(s, [["input"]])).toBe("输入 1.2K tok");
+  });
+
+  it("output 为会话累计输出", () => {
+    const s = makeSession();
+    s.footer.outputTokens = 1600;
+    expect(formatFooterContent(s, [["output"]])).toBe("输出 1.6K tok");
+  });
+});
+
 describe("非三处的 truncate 调用保持原样", () => {
   it("错误信息截断不带标注（buildTerminalStatus 路径）", () => {
     const s = makeSession();

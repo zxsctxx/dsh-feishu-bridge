@@ -32,7 +32,7 @@ export interface CommandDeps extends Omit<CommandContext, "chatId" | "msgId" | "
 /**
  * 解析并执行一条飞书斜杠命令。
  *
- * `/feishu config reload` 这类带空格的子命令由 handler 自行解析 args。
+ * `/feishu status` 这类带空格的子命令由 handler 自行解析 args。
  */
 export async function dispatchCommand(
   deps: CommandDeps,
