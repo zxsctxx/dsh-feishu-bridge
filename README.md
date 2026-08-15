@@ -112,7 +112,7 @@ dsh --profile web --patch /path/to/dsh-feishu-bridge/feishu.patch.yml
 
 1. 先启动 Bot，用你的账号给 Bot 发任意消息。
 2. 若未授权，Bot 会回复你的 **open_id**（`ou_…`）和当前 **chat_id**（`oc_…`）。
-3. 把 `allowedOpenIds` / `allowedChatIds` 写入组合配置（如 `$DSH_HOME/profiles/feishu/cordis.patch.yml` 的 `feishu-bridge.config`）后执行 `/feishu config reload`。**环境变量必须在进程启动前设置**，运行中修改不会生效（reload 只重读组合配置，不重读环境）。
+3. 把 `allowedOpenIds` / `allowedChatIds` 写入组合配置（如 `$DSH_HOME/profiles/feishu/cordis.patch.yml` 的 `feishu-bridge.config`）。**DSH 会在配置保存后自动热重载插件，无需额外操作**；`/feishu config reload` 仅用于手动触发。**环境变量必须在进程启动前设置**，运行中修改不会生效。
 
 匹配规则：
 
@@ -135,7 +135,7 @@ dsh --profile web --patch /path/to/dsh-feishu-bridge/feishu.patch.yml
 | `/queue` | 查看队列状态 |
 | `/model` | 查看/切换模型（`/model deepseek/deepseek-chat`） |
 | `/status` | 查看 DSH 状态（会话/模型/token 统计） |
-| `/feishu status` / `monitor [reset]` / `config [reload]` / `doctor` / `help` | 飞书连接管理 |
+| `/feishu status` / `monitor [reset]` / `config [reload]` / `doctor` / `help` | 飞书连接管理（配置改动会自动热重载，`config reload` 仅手动触发） |
 | `/help` | 显示帮助 |
 
 ## 本地开发

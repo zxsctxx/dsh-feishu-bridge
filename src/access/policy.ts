@@ -47,7 +47,7 @@ export function formatAccessDeniedMessage(
   }
   const lines = [
     "无权访问此机器人（accessPolicy=allowlist）。",
-    "若你是管理员，把下面 ID 写入 DSH profile 的 cordis.patch.yml（feishu-bridge 的 config 段）后执行 /feishu config reload：",
+    "若你是管理员，把下面 ID 写入 DSH profile 的 cordis.patch.yml（feishu-bridge 的 config 段），保存后自动热重载生效：",
     '  "accessPolicy": "allowlist",',
     `  "allowedOpenIds": ["${context.senderOpenId}"],`,
     `  "allowedChatIds": ["${context.chatId}"],`,
