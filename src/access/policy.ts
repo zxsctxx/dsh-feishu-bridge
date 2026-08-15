@@ -52,7 +52,7 @@ export function formatAccessDeniedMessage(
     `  "allowedOpenIds": ["${context.senderOpenId}"],`,
     `  "allowedChatIds": ["${context.chatId}"],`,
     "只配 openIds 表示该用户任意会话可聊；只配 chatIds 表示该会话任意用户可聊；两者都配则需同时匹配。",
-    "也可用环境变量（多个逗号分隔）：FEISHU_ALLOWED_OPEN_IDS=ou_xxx FEISHU_ALLOWED_CHAT_IDS=oc_xxx。",
+    "也可在进程启动前用环境变量（多个逗号分隔）：FEISHU_ALLOWED_OPEN_IDS=ou_xxx FEISHU_ALLOWED_CHAT_IDS=oc_xxx。",
   ];
   if (reason === "empty_allowlist") {
     lines.splice(1, 0, "当前 allowlist 为空，所有人都会被拒绝。");

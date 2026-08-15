@@ -1,0 +1,7 @@
+# dsh-feishu-bridge 的 --patch 挂载示例（语义同 profile 的 cordis.patch.yml）
+#
+# 用法：dsh --profile <name> --patch /path/to/dsh-feishu-bridge/feishu.patch.yml
+# 前提：插件已安装进对应 profile（dsh plugin --profile <name> add <path>）
+- insert:
+    - id: feishu-bridge
+      name: dsh-feishu-bridge

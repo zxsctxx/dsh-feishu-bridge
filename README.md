@@ -2,7 +2,7 @@
 
 通过飞书/Lark 官方 Bot API WebSocket 长连接，将飞书作为 **DeepSeek Harness（DSH）** 的受控聊天入口。使用 CardKit v2 原生元素流式 API 输出。
 
-本项目由 [pi-feishu-bridge](https://github.com/zxsctxx/pi-feishu-bridge)（Pi agent 扩展）移植而来：飞书层（WebSocket 客户端、CardKit 流式卡片、访问控制、消息队列、澄清卡）原样复用，Agent 对接层替换为参考 [dsh-qqbot](https://github.com/tencent-connect/dsh-qqbot) 的 DSH 对接逻辑（`ctx.agents` 服务 + `session/event` 事件流）。
+本项目由 [pi-feishu-bridge](https://github.com/zxsctxx/pi-feishu-bridge)（Pi agent 扩展）移植并适配而来：飞书层（WebSocket 客户端、CardKit 流式卡片、访问控制、消息队列、澄清卡）沿用其设计，Agent 对接层参考 [dsh-qqbot](https://github.com/tencent-connect/dsh-qqbot) 的 DSH 对接逻辑（`ctx.agents` 服务 + `session/event` 事件流）重写。
 
 ## 架构
 
@@ -19,12 +19,12 @@
 
 ## 主要能力
 
-- **流式卡片输出** — CardKit 原生流式刷新，thinking 与工具步骤面板实时展示
-- **自动降级保障** — CardKit 不可用时自动降级为静态卡片或纯文本，答案必达
-- **信息页脚** — 每轮回答末尾展示模型、耗时、token、缓存命中、stop_reason 等
+- **流式卡片输出** — CardKit 原生流式刷新，thinking 与工具步骤面板实时展示（推理正文默认折叠，设 `showThinking: true` 显示）
+- **自动降级保障** — CardKit 不可用时自动降级为静态卡片，再降为纯文本，尽可能送达；用户原消息已撤回时不再打扰
+- **信息页脚** — 终态卡片默认展示状态、用时、首 token 平均延迟、输出速率与缓存命中/输入/输出/上下文占用（`footer.lines` 可自定义布局，可选 model、token、stop_reason、cost 等字段）
 - **访问控制** — allowlist 白名单 + 群聊 @ 校验，未授权请求无法进入 Agent
-- **弹性容错** — 限频、网络超时、消息撤回等异常自动恢复或优雅终止
-- **媒体收发** — 文本/富文本/图片/文件/音频/视频，支持 Reaction 输入指示
+- **弹性容错** — 飞书 API 限频（429）与瞬时错误自动退避重试，WebSocket 断线自动重连，回复目标被撤回时回退为新建消息或优雅终止
+- **媒体收发** — 文本/富文本/图片/文件的收发；音频/视频消息识别为占位文本并尝试下载；支持 Reaction 输入指示（处理中 Typing、失败 CrossMark）
 - **实用工具** — `send_to_feishu` / `send_image_to_feishu` / `send_file_to_feishu` / `ask_feishu`（注册进共享 agent 的 scoped 工具集）
 - **会话管理** — `/new` 清空上下文；`/resume` 列出/恢复持久化会话；`/model` 切换模型（fork 重建）；`/stop` 中断
 
@@ -46,18 +46,36 @@ dsh plugin --profile feishu add /path/to/dsh-feishu-bridge
 #       - id: feishu-bridge
 #         name: dsh-feishu-bridge
 
-# 启动（环境变量提供飞书凭据）
+# 启动（环境变量提供飞书凭据；bash / PowerShell 语法）
 export FEISHU_APP_ID="你的AppID" FEISHU_APP_SECRET="你的AppSecret"
+# Windows PowerShell 等价写法：
+#   $env:FEISHU_APP_ID="你的AppID"; $env:FEISHU_APP_SECRET="你的AppSecret"
 dsh --profile feishu
 ```
 
+> 注：`dsh plugin --profile feishu add` 首次运行会初始化该 profile（bundle 为 `@deepseek-ai/dsh-base`），它是 **headless 运行、无 Web GUI**；如希望保留 Web GUI，可改用 `web` profile 并编辑 `$DSH_HOME/profiles/web/cordis.patch.yml`。
+
 ### 方式二：--patch 开发模式
 
+`dsh` 的 `--patch` 接受的是 **patch 列表**（与 `cordis.patch.yml` 同格式），不是完整条目列表——不能直接传本仓库根目录的 `cordis.yml`。仓库提供了现成的 [feishu.patch.yml](feishu.patch.yml)：
+
 ```bash
-cd /path/to/deepseek-harness
-export FEISHU_APP_ID="xxx" FEISHU_APP_SECRET="xxx"
-pnpm dsh web --patch /path/to/dsh-feishu-bridge/cordis.yml
+# 构建
+cd /path/to/dsh-feishu-bridge
+npm install && npm run build
+
+# 安装依赖到目标 profile（以 web profile 为例）
+dsh plugin --profile web add /path/to/dsh-feishu-bridge
+
+# 启动（--patch 叠加插件，不改动 profile 文件）
+dsh --profile web --patch /path/to/dsh-feishu-bridge/feishu.patch.yml
 ```
+
+## 飞书侧准备
+
+1. 在飞书开放平台创建**企业自建应用**，开启「机器人」能力并发布版本。
+2. 开通 **WebSocket 长连接**（无需公网回调地址），订阅事件 `im.message.receive_v1`（私聊/群聊消息）。
+3. 按需为应用开通权限并授予数据权限：读取/发送消息、上传/下载媒体、Reaction（表情回应）、创建卡片等。
 
 ## 配置
 
@@ -80,8 +98,15 @@ pnpm dsh web --patch /path/to/dsh-feishu-bridge/cordis.yml
 | `taskTimeoutSec` | 900 | 单轮 Agent 硬超时（秒），超时 abort 并终态封卡 |
 | `sameChatBusyPolicy` | `queue` | 同 chat 忙时：`queue` 排队；`interrupt` 打断当前并只跑最新消息 |
 | `sessionIdleTimeout` | 1800000 | Agent 闲置超时(ms)，超时 dispose，下条消息自动恢复 |
-| `footer` | 两行默认 | 终态卡片页脚布局（`lines` 二维数组） |
+| `footer` | 两行默认 | 终态卡片页脚布局（`lines` 二维数组）；默认 `status/elapsed/ttft/speed` + `cache_hit/input/output/context`，可选 `model`/`stop_reason`/`cost` 等字段 |
 | `debug` | `false` | 调试日志（也可 `FEISHU_DEBUG=1`） |
+| `encryptKey` / `verificationToken` | `""` | 飞书事件加密密钥 / 校验令牌（可选） |
+| `printStrategy` / `printStep` / `printFrequencyMs` | `delay` / `4` / `70` | CardKit 流式打印频率控制 |
+| `panelExpanded` / `streamingPanelExpanded` | `false` | 过程面板默认展开 |
+| `maxToolSteps` / `maxThinkingRounds` | `20` / `20` | 过程面板展示上限 |
+| `maxReasoningChars` / `maxToolDetailChars` / `maxToolOutputChars` / `maxAnswerElementChars` | `3500` / `500` / `800` / `30000` | 推理/工具详情展示上限与单卡续卡上限 |
+
+> 说明：`maxQueue` / `processingTimeoutMs` 在当前版本存在但**未启用**（保留兼容）。
 
 全部字段与默认值见 `src/config.ts` 的 Schema 注释。
 
@@ -89,7 +114,7 @@ pnpm dsh web --patch /path/to/dsh-feishu-bridge/cordis.yml
 
 1. 先启动 Bot，用你的账号给 Bot 发任意消息。
 2. 若未授权，Bot 会回复你的 **open_id**（`ou_…`）和当前 **chat_id**（`oc_…`）。
-3. 把 `allowedOpenIds` / `allowedChatIds` 写入 DSH 的 cordis 配置（或环境变量）后 `/feishu config reload`。
+3. 把 `allowedOpenIds` / `allowedChatIds` 写入组合配置（如 `$DSH_HOME/profiles/feishu/cordis.patch.yml` 的 `feishu-bridge.config`）后执行 `/feishu config reload`。**环境变量必须在进程启动前设置**，运行中修改不会生效（reload 只重读组合配置，不重读环境）。
 
 匹配规则：
 
@@ -107,7 +132,7 @@ pnpm dsh web --patch /path/to/dsh-feishu-bridge/cordis.yml
 | 命令 | 作用 |
 |------|------|
 | `/new` | 新建 DSH 会话（清空上下文；旧会话仍持久化，可 `/resume` 找回） |
-| `/resume` | 列出/恢复历史会话（`/resume` 列表；`/resume 3` 按序号；`/resume <sessionId>` 匹配） |
+| `/resume` | 列出/恢复历史会话（`/resume` 列表；`/resume 3` 按序号；`/resume <id 前缀>` 前缀匹配；需宿主启用会话持久化） |
 | `/stop` | 中断当前处理，清空排队 |
 | `/queue` | 查看队列状态 |
 | `/model` | 查看/切换模型（`/model deepseek/deepseek-chat`） |
@@ -131,7 +156,7 @@ npm run build       # tsc
 | 插件形态 | Pi extension（`pi.registerTool` 等） | Cordis 插件（`inject: ['agents']` + `Config` Schema） |
 | 入站投递 | `pi.sendUserMessage()` | `createUserMessage()` + `agent.followup()` |
 | 出站事件 | `message_update` / `tool_execution_*` / `agent_settled` | `session/event`（`assistant/chunk` / `tool/call` / `turn/end`） |
-| 会话管理 | 单 Pi session 共享 | 单共享 dsh Agent（确定性 sessionId，重启可 resume） |
+| 会话管理 | 单 Pi session 共享 | 单共享 dsh Agent（确定性 sessionId，重启可 resume；需宿主启用会话持久化） |
 | 模型切换 | `pi.setModel()` | fork + `agents.create`（带 seed，模型路由持久化） |
 | 工具注册 | `pi.registerTool` | `defineTool` 注册进 agent scoped `ctx.tools` |
 
