@@ -25,6 +25,7 @@ import { DshSessionManager } from "./dsh/session-manager.js";
 import { DshEventAdapter, type SettleHooks } from "./dsh/event-adapter.js";
 import { registerBridgeTools, type ToolDeps } from "./tools.js";
 import { dispatchCommand } from "./commands/index.js";
+import { buildWorkspaceCard, verifyWorkspaceCardPayload } from "./cardkit/workspace.js";
 
 // ── Cordis 插件元数据 ──
 export const name = "feishu-bridge";
@@ -220,6 +221,34 @@ export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void
     logger.debug(message);
   }
 
+  async function handleWorkspaceCardAction(action: { value: Record<string, unknown>; senderOpenId: string; chatId: string }): Promise<void> {
+    try {
+      if (!action.chatId) throw new Error("无法确认卡片所属 chat，请重新发送 /workspace");
+      const payload = verifyWorkspaceCardPayload(config.appSecret, action.value, action.chatId);
+      if (!manager.isWorkspaceCardAdmin(action.senderOpenId)) throw new Error("无权操作工作区卡片");
+      if (payload.action === "list") {
+        await client?.sendCard(action.chatId, buildWorkspaceCard(config.appSecret, action.chatId, manager.getEffectiveWorkspace(action.chatId), manager.listWorkspaces()));
+        return;
+      }
+      if (payload.action === "use") {
+        if (!payload.workspaceId) throw new Error("卡片缺少工作区 ID");
+        if (!manager.isIdleFor(action.chatId)) throw new Error("当前 chat 正在处理中，请等待完成或先执行 /stop");
+        await prepareSessionControl(action.chatId);
+        const result = await manager.switchWorkspace(action.chatId, payload.workspaceId, payload.mode ?? "reset");
+        const context = result.preservedContext ? "旧上下文已复制。" : "已创建新的会话，未复制旧上下文。";
+        await client?.sendMessage(action.chatId, result.changed ? "已切换工作区：" + result.workspace.title + "\n路径：" + result.workspace.path + "\n" + context : "当前已经是工作区：" + result.workspace.title);
+        return;
+      }
+      if (!manager.isIdleFor(action.chatId)) throw new Error("当前 chat 正在处理中，请等待完成或先执行 /stop");
+      await prepareSessionControl(action.chatId);
+      const result = await manager.resetWorkspace(action.chatId);
+      await client?.sendMessage(action.chatId, result.changed ? "已恢复默认工作区：" + result.workspace.title + "\n路径：" + result.workspace.path : "当前 chat 没有单独的工作区选择，仍使用：" + result.workspace.title);
+    } catch (error) {
+      logger.warn("workspace card action failed: " + describeError(error));
+      if (action.chatId) await client?.sendMessage(action.chatId, "工作区卡片操作失败：" + describeError(error));
+    }
+  }
+
   // ── 飞书客户端 ──
 
   function startFeishuClient(): void {
@@ -262,6 +291,7 @@ export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void
         logger.info(`feishu status: ${status}`);
       });
       client.setOnCardAction((action) => { void clarify?.handleAction(action); });
+      client.setOnWorkspaceAction((action) => { void handleWorkspaceCardAction(action); });
 
       void client.connect().then(() => {
         const warning = accessRiskWarning(config);

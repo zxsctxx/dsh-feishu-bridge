@@ -47,6 +47,8 @@ export interface BridgeConfig {
   defaultWorkspace?: string;
   /** 可切换工作区的用户；群聊未配置时不允许切换。 */
   workspaceAdminOpenIds?: string[];
+  /** V2 运行时注册工作区允许使用的根目录。 */
+  workspaceRoots?: string[];
   /** 是否把飞书工具（send_to_feishu 等）注册进共享 agent 的 scoped 工具集 */
   registerBridgeTools: boolean;
 
@@ -111,6 +113,7 @@ export const ConfigSchema: Schema<BridgeConfig> = Schema.object({
   workspaces: Schema.array(WorkspaceSchema).default([]).description("V1 命名工作区列表"),
   defaultWorkspace: Schema.string().description("默认工作区 ID"),
   workspaceAdminOpenIds: Schema.array(Schema.string()).default([]).description("可切换工作区的用户 open_id"),
+  workspaceRoots: Schema.array(Schema.string()).default([]).description("V2 运行时工作区注册允许的根目录"),
   registerBridgeTools: Schema.boolean().default(true).description("是否注册飞书工具（send_to_feishu 等）到共享 agent"),
 
   // ── 流式卡片 ──

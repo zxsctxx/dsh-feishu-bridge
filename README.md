@@ -98,6 +98,7 @@ dsh --profile web --patch /path/to/dsh-feishu-bridge/feishu.patch.yml
 | `workspaces` | `[]` | V1 命名工作区列表，按 chat 独立选择 |
 | `defaultWorkspace` | 未设置 | 默认工作区 ID，优先级低于 chat 选择 |
 | `workspaceAdminOpenIds` | `[]` | 可切换工作区的用户；未配置时仅允许私聊切换 |
+| `workspaceRoots` | `[]` | V2 运行时注册工作区允许的根目录；为空时禁止 `/workspace add` |
 | `registerBridgeTools` | `true` | 是否把飞书工具注册进每个 chat 的 agent |
 | `flushIntervalMs` | 200 | 流式刷新节流间隔(ms) |
 | `showThinking` | `false` | 默认不展示推理正文 |
@@ -142,6 +143,28 @@ workspaceAdminOpenIds:
 
 切换工作区会为当前 chat 创建新的 DSH session；旧 session 不删除，可通过 `/resume` 恢复。桥不会调用全局 `process.chdir()`，因此不同 chat 可以安全使用不同目录。
 
+### V2 运行时工作区与交互卡片
+
+V2 在 V1 的静态配置工作区之外增加 bridge-local registry，默认保存到：
+
+    ~/.dsh-feishu-bridge/workspace-registry.json
+
+运行时注册必须位于 `workspaceRoots` 允许的目录根下：
+
+```yaml
+workspaceRoots:
+  - C:/projects
+  - D:/workspaces
+```
+
+管理员可以使用 `/workspace add <id> <path>`、`/workspace remove <id>` 和 `/workspace rename <id> <title>` 管理运行时工作区。配置文件中声明的工作区不能通过运行时命令删除或重命名；仍被 chat 使用的工作区也不能删除。路径会规范化并检查真实目录，不能通过符号链接逃逸根目录。
+
+`/workspace` 会发送包含切换按钮的 CardKit 交互卡片。卡片操作包含 chat 绑定、过期时间和 HMAC 签名，服务端仍会重新校验 chat、管理员身份、工作区状态和当前忙闲状态。卡片不可用时仍可使用文本命令。
+
+切换支持两种模式：默认重置为新 session；`--keep-context` 使用 DSH session fork 在新 cwd 创建 child session，并复制旧上下文。fork 失败时不改变当前工作区。
+
+工作区 registry 会把 V1 配置工作区做兼容迁移；配置同 ID 条目始终优先，不保存飞书凭据。
+
 ### 如何配置 allowlist 才能对话
 
 1. 先启动 Bot，用你的账号给 Bot 发任意消息。
@@ -169,8 +192,13 @@ workspaceAdminOpenIds:
 | `/queue` | 查看队列状态 |
 | `/model` | 查看/切换模型（`/model deepseek/deepseek-chat`，fork 重建会话） |
 | `/preset` | 查看/切换 Agent 预设（`/preset code`；`/preset default code` 设全局默认；`/preset default clear` 清除） |
-| `/workspace` | 查看当前工作区与已注册列表 |
+| `/workspace` | 查看当前工作区并发送交互卡片 |
+| `/workspace list` | 查看当前工作区与已注册列表 |
 | `/workspace use <id>` | 切换当前 chat 工作区（新建 session） |
+| `/workspace use <id> --keep-context` | 切换工作区并 fork 复制上下文 |
+| `/workspace add <id> <path>` | 在 `workspaceRoots` 内注册运行时工作区（管理员） |
+| `/workspace remove <id>` | 删除未被使用的运行时工作区（管理员） |
+| `/workspace rename <id> <title>` | 重命名运行时工作区（管理员） |
 | `/workspace reset` | 清除当前 chat 选择，恢复默认工作区 |
 | `/status` | 查看 DSH 状态（会话/模型/预设/token/工作区统计） |
 | `/feishu status` / `monitor [reset]` / `config` / `doctor` / `help` | 飞书连接管理（配置改动由 DSH 自动热重载，无需手动触发） |

@@ -85,6 +85,8 @@ export class DshSessionManager {
     workspacePrefsPath?: string,
     /** session 归属文件路径覆盖（仅供测试注入临时路径） */
     sessionOwnersPath?: string,
+    /** workspace registry 文件路径覆盖（仅供测试注入临时路径） */
+    workspaceRegistryPath?: string,
   ) {
     this.modelResolver = new ModelResolver(ctx, config, logger);
     this.presetPrefs = new PresetPrefsStore(
@@ -95,6 +97,7 @@ export class DshSessionManager {
       config,
       workspacePrefsPath,
       (message) => this.logger.warn(message),
+      workspaceRegistryPath,
     );
     this.sessionOwners = new SessionOwnershipStore(sessionOwnersPath);
   }
@@ -183,14 +186,76 @@ export class DshSessionManager {
     return chatType === "p2p";
   }
 
-  async switchWorkspace(chatId: string, workspaceId: string): Promise<{ changed: boolean; workspace: EffectiveWorkspace; sessionId?: SessionId }> {
+  isWorkspaceCardAdmin(senderOpenId: string): boolean {
+    return (this.config.workspaceAdminOpenIds ?? []).includes(senderOpenId);
+  }
+
+  addWorkspace(workspaceId: string, path: string, title?: string): WorkspaceInfo {
+    return this.workspaces.addRuntime(workspaceId, path, title);
+  }
+
+  removeWorkspace(workspaceId: string): void {
+    this.workspaces.removeRuntime(workspaceId);
+  }
+
+  renameWorkspace(workspaceId: string, title: string): WorkspaceInfo {
+    return this.workspaces.renameRuntime(workspaceId, title);
+  }
+
+  async switchWorkspace(
+    chatId: string,
+    workspaceId: string,
+    mode: "reset" | "keep-context" = "reset",
+  ): Promise<{ changed: boolean; workspace: EffectiveWorkspace; sessionId?: SessionId; preservedContext?: boolean }> {
     const current = this.workspaces.getEffective(chatId);
-    const target = this.workspaces.select(chatId, workspaceId);
-    if (this.workspaces.currentSelection(chatId) === current.id && target.path === current.path) {
-      return { changed: false, workspace: target };
+    const targetInfo = this.workspaces.registeredWorkspace(workspaceId, true);
+    if (targetInfo.id === current.id && targetInfo.path === current.path) {
+      return { changed: false, workspace: { ...targetInfo, source: current.source } };
     }
+    if (mode === "keep-context") return this.switchWorkspaceWithContext(chatId, targetInfo);
+    const target = this.workspaces.select(chatId, workspaceId);
     const sessionId = await this.rotateSession(chatId);
-    return { changed: true, workspace: target, sessionId };
+    return { changed: true, workspace: target, sessionId, preservedContext: false };
+  }
+
+  private async switchWorkspaceWithContext(chatId: string, targetInfo: WorkspaceInfo): Promise<{ changed: boolean; workspace: EffectiveWorkspace; sessionId?: SessionId; preservedContext?: boolean }> {
+    const key = this.sessionKeyFor(chatId);
+    const record = this.records.get(key);
+    if (!record) {
+      const target = this.workspaces.select(chatId, targetInfo.id);
+      const sessionId = await this.rotateSession(chatId);
+      return { changed: true, workspace: target, sessionId, preservedContext: false };
+    }
+    const sessions = this.getSessionsService();
+    if (!sessions) throw new Error("宿主未提供 sessions.fork，无法使用 --keep-context。");
+    let seed: readonly SessionEvent[];
+    try {
+      seed = sessions.fork(record.agent.session).events;
+    } catch (error) {
+      throw new Error("复制当前上下文失败，工作区未切换：" + (error instanceof Error ? error.message : String(error)), { cause: error });
+    }
+    const composed = await this.composePreset(this.effectivePresetId(key));
+    const setup = this.combinedSetup(composed, chatId);
+    const route = this.modelResolver.getEffectiveRoute(key);
+    const childId = SessionId(randomUUID());
+    const created = await this.agents.create({
+      sessionId: childId,
+      seed,
+      meta: {
+        cwd: targetInfo.path,
+        parentSession: record.sessionId,
+        seedLength: seed.length,
+        ...(composed.agentPreset ? { agentPreset: composed.agentPreset } : {}),
+      },
+      ...(route ? { agentOptions: route } : {}),
+      ...(setup ? { setup } : {}),
+    });
+    const target = this.workspaces.select(chatId, targetInfo.id);
+    this.registerSession(childId, chatId);
+    this.modelResolver.setSessionId(key, childId);
+    this.records.set(key, { sessionKey: key, sessionId: childId, agent: created.agent, handle: created, lastActivity: Date.now(), agentPreset: composed.agentPreset });
+    await record.handle.dispose().catch(() => {});
+    return { changed: true, workspace: target, sessionId: childId, preservedContext: true };
   }
 
   async resetWorkspace(chatId: string): Promise<{ changed: boolean; workspace: EffectiveWorkspace; sessionId?: SessionId }> {

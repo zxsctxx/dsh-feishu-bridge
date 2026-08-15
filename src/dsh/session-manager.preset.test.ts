@@ -49,6 +49,7 @@ function makeManager(configOverrides: Partial<BridgeConfig> = {}, agentsOverride
   const presetPrefsPath = join(dir, "preset-prefs.json");
   const workspacePrefsPath = join(dir, "workspace-prefs.json");
   const sessionOwnersPath = join(dir, "session-owners.json");
+  const workspaceRegistryPath = join(dir, "workspace-registry.json");
   const presets: any = {
     defaultId: "minimal",
     list: async () => [
@@ -76,7 +77,7 @@ function makeManager(configOverrides: Partial<BridgeConfig> = {}, agentsOverride
     ...agentsOverrides,
   };
   const logger: any = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} };
-  const manager = new DshSessionManager(ctx, agents, config, logger, () => {}, presetPrefsPath, workspacePrefsPath, sessionOwnersPath);
+  const manager = new DshSessionManager(ctx, agents, config, logger, () => {}, presetPrefsPath, workspacePrefsPath, sessionOwnersPath, workspaceRegistryPath);
   return { manager, dir, config };
 }
 

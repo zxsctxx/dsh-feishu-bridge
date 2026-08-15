@@ -51,14 +51,14 @@ describe("WorkspaceResolver", () => {
     mkdirSync(join(root, "alpha"));
     mkdirSync(join(root, "beta"));
     const prefsPath = join(root, "workspace-prefs.json");
-    const resolver = new WorkspaceResolver(config(root), prefsPath);
+    const resolver = new WorkspaceResolver(config(root), prefsPath, undefined, join(root, "registry.json"));
 
     expect(resolver.getEffective("chat-a")).toMatchObject({ id: "alpha", title: "Alpha", source: "default" });
     resolver.select("chat-a", "beta");
     expect(resolver.getEffective("chat-a")).toMatchObject({ id: "beta", title: "Beta", source: "chat" });
     expect(resolver.getEffective("chat-b")).toMatchObject({ id: "alpha", source: "default" });
 
-    const restored = new WorkspaceResolver(config(root), prefsPath);
+    const restored = new WorkspaceResolver(config(root), prefsPath, undefined, join(root, "registry.json"));
     expect(restored.getEffective("chat-a")).toMatchObject({ id: "beta", path: join(root, "beta"), source: "chat" });
     restored.reset("chat-a");
     expect(restored.getEffective("chat-a")).toMatchObject({ id: "alpha", source: "default" });
@@ -71,7 +71,7 @@ describe("WorkspaceResolver", () => {
     mkdirSync(join(root, "alpha"));
     const prefsPath = join(root, "workspace-prefs.json");
     writeFileSync(prefsPath, JSON.stringify({ version: 1, selections: { "cli_test:chat-a": "removed" } }));
-    const resolver = new WorkspaceResolver(config(root), prefsPath);
+    const resolver = new WorkspaceResolver(config(root), prefsPath, undefined, join(root, "registry.json"));
 
     expect(resolver.getEffective("chat-a")).toMatchObject({ id: "alpha", source: "default" });
     rmSync(root, { recursive: true, force: true });
@@ -81,7 +81,7 @@ describe("WorkspaceResolver", () => {
     const root = mkdtempSync(join(tmpdir(), "workspace-resolver-"));
     const cfg = config(root);
     cfg.workspaces = [{ id: "missing", path: join(root, "missing") }];
-    const resolver = new WorkspaceResolver(cfg, join(root, "prefs.json"));
+    const resolver = new WorkspaceResolver(cfg, join(root, "prefs.json"), undefined, join(root, "registry.json"));
 
     expect(resolver.list()).toEqual([{ id: "missing", title: "missing", path: join(root, "missing"), status: "missing" }]);
     expect(() => resolver.select("chat-a", "unknown")).toThrow(WorkspaceError);

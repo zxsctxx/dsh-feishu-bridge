@@ -16,6 +16,9 @@
       #       path: C:/projects/deepseek-harness
       #   defaultWorkspace: bridge
       #   workspaceAdminOpenIds: [ou_xxx]
+      #   # V2 运行时注册允许的根目录（为空时禁止 /workspace add）
+      #   workspaceRoots:
+      #     - C:/projects
 
 # 可选：agent-presets 服务行，提供 /preset 命令的预设列表与切换能力。
 # 不插也能跑，但 /preset 会提示「宿主未组合 agentPresets」。

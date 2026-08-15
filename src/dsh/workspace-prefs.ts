@@ -35,6 +35,13 @@ export class WorkspacePrefsStore {
     return deleted;
   }
 
+  hasWorkspaceSelection(workspaceId: string): boolean {
+    for (const selectedId of this.selections.values()) {
+      if (selectedId === workspaceId) return true;
+    }
+    return false;
+  }
+
   private load(): void {
     if (!existsSync(this.prefsPath)) return;
 

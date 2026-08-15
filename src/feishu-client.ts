@@ -176,6 +176,7 @@ export class FeishuClient {
     | null = null;
   private onStatusChangeCallback: ((status: BridgeStatus) => void) | null = null;
   private onCardActionCallback: ((action: { clarifyId: string; choice: string; senderOpenId: string }) => void) | null = null;
+  private onWorkspaceActionCallback: ((action: { value: Record<string, unknown>; senderOpenId: string; chatId: string }) => void) | null = null;
 
   // Reaction 跟踪：chatId → { msgId, reactionId }
   private typingMessages: Map<string, { msgId: string; reactionId: string }> = new Map();
@@ -233,7 +234,12 @@ export class FeishuClient {
           // 下拉框（select_static）：选中值经 action.option 回传，元素 value 携带 clarify_id
           const choice = data?.action?.option ?? parsed.choice;
           const senderOpenId = data?.operator?.open_id ?? "";
-          if (typeof clarifyId === "string" && typeof choice === "string") this.onCardActionCallback?.({ clarifyId, choice, senderOpenId });
+          if (typeof clarifyId === "string" && typeof choice === "string") {
+            this.onCardActionCallback?.({ clarifyId, choice, senderOpenId });
+          } else if (parsed?.kind === "workspace") {
+            const chatId = data?.context?.open_chat_id ?? data?.open_chat_id ?? "";
+            this.onWorkspaceActionCallback?.({ value: parsed, senderOpenId, chatId });
+          }
         },
       });
 
@@ -614,6 +620,8 @@ export class FeishuClient {
   }
 
   setOnCardAction(cb: (action: { clarifyId: string; choice: string; senderOpenId: string }) => void): void { this.onCardActionCallback = cb; }
+
+  setOnWorkspaceAction(cb: (action: { value: Record<string, unknown>; senderOpenId: string; chatId: string }) => void): void { this.onWorkspaceActionCallback = cb; }
 
   // ─── 内部方法 ───────────────────────────────────────
 

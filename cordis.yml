@@ -73,6 +73,9 @@
     #     path: C:/projects/dsh-feishu-bridge
     # defaultWorkspace: bridge
     # workspaceAdminOpenIds: [ou_xxx]
+    # V2 运行时注册允许的根目录（为空时禁止 /workspace add）
+    # workspaceRoots:
+    #   - C:/projects
     accessPolicy: allowlist
     allowedOpenIds: []
     allowedChatIds: []
