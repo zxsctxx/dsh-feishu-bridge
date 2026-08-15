@@ -114,6 +114,17 @@ export class ModelResolver {
   }
 
   /**
+   * 解析模型显示名（settings.yaml providers[].models[].name），
+   * 供 footer「模型 + 思考强度」展示；未配置时返回 undefined（回退 model id）
+   */
+  resolveModelName(provider: string, model: string): string | undefined {
+    const hit = this.settings
+      .readModels()
+      .find((entry) => entry.provider === provider && entry.id === model);
+    return hit?.name;
+  }
+
+  /**
    * 列出所有可用模型
    */
   listModels(): ModelEntry[] {

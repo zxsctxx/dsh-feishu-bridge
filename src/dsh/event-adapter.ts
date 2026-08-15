@@ -101,6 +101,10 @@ export class DshEventAdapter {
         this.handleAssistantMessage(chatId, event);
         break;
       }
+      case "request/header": {
+        this.handleRequestHeader(chatId, event);
+        break;
+      }
       case "turn/end": {
         void this.handleTurnEnd(chatId, event);
         break;
@@ -160,11 +164,29 @@ export class DshEventAdapter {
     const session = streaming?.sessionFor(chatId);
     if (!session) return;
     const message = event.data.message;
-    if (message?.source?.model) {
-      session.footer.model = message.source.model;
+    const source = message?.source as { provider?: string; model?: string } | undefined;
+    if (source?.model) {
+      // 显示名优先（settings.yaml name），缺省回退 model id
+      session.footer.model = this.manager.resolveModelLabel(source.provider ?? "", source.model);
     }
     if (session.footer.apiCalls !== undefined) {
       session.footer.apiCalls += 1;
+    }
+  }
+
+  /** request/header：记录实际请求的模型与思考强度（footer「模型 + effort」） */
+  private handleRequestHeader(chatId: string, event: SessionEvent): void {
+    if (event.type !== "request/header") return;
+    const streaming = this.streaming();
+    const session = streaming?.sessionFor(chatId);
+    if (!session) return;
+    const config = (event.data as { header?: { config?: unknown } }).header?.config as
+      | { provider?: string; model?: string; reasoningEffort?: string }
+      | undefined;
+    if (!config?.model) return;
+    session.footer.model = this.manager.resolveModelLabel(config.provider ?? "", config.model);
+    if (config.reasoningEffort) {
+      session.footer.reasoningEffort = config.reasoningEffort;
     }
   }
 

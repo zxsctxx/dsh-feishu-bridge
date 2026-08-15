@@ -160,6 +160,11 @@ export class DshSessionManager {
     };
   }
 
+  /** 解析模型显示名（settings.yaml name；缺省回退 model id） */
+  resolveModelLabel(provider: string, model: string): string {
+    return this.modelResolver.resolveModelName(provider, model) ?? model;
+  }
+
   getTokenUsage(chatId: string): TokenUsageStats {
     const stats: TokenUsageStats = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
     const events = this.recordFor(chatId)?.agent.session.events;
@@ -224,17 +229,20 @@ export class DshSessionManager {
   // ── 预设管理（/preset） ──
 
   private getPresets(): AgentPresetsLike | undefined {
+    const ctxAny = this.ctx as unknown as Record<string, unknown>;
+    // 真实宿主：未 inject 的服务必须经 ctx.get 读取（属性访问会抛 client property 错误）
     try {
-      const ctxAny = this.ctx as unknown as Record<string, unknown>;
-      // 测试桩直接挂属性；真实宿主须走 ctx.get（未 inject 的属性访问会抛错）
-      const direct = ctxAny.agentPresets as AgentPresetsLike | undefined;
-      if (direct) return direct;
       const viaGet = typeof ctxAny.get === "function"
         ? (ctxAny.get as (key: string) => unknown)("agentPresets")
         : undefined;
-      return viaGet as AgentPresetsLike | undefined;
+      if (viaGet) return viaGet as AgentPresetsLike;
     } catch {
-      // agentPresets 服务未注入，降级跳过
+      // 忽略后继续尝试属性通道（测试桩用）
+    }
+    // 测试桩：ctx 直接挂 agentPresets 属性
+    try {
+      return ctxAny.agentPresets as AgentPresetsLike | undefined;
+    } catch {
       return undefined;
     }
   }
@@ -458,7 +466,10 @@ export class DshSessionManager {
       try {
         const composed = await this.composePreset(this.effectivePresetId(key));
         agentPreset = composed.agentPreset;
-        const resumeRoute = this.modelResolver.getResumeRoute(key);
+        // resume 必须补齐 agent.options.provider/model：dsh 首次请求的 seedConfig
+        // 直接取 options（requestHeaderLogged=false），缺了会报 persona {{model}}
+        // 无值 / agent has no provider-model。显式切换优先，否则用宿主有效路由兜底。
+        const resumeRoute = this.modelResolver.getResumeRoute(key) ?? route;
         const setup = this.combinedSetup(composed, chatId);
         const resumed = await this.agents.resume({
           resumeSessionId: sessionId,
@@ -541,8 +552,12 @@ export class DshSessionManager {
     try {
       const composed = await this.composePreset(this.effectivePresetId(key));
       const setup = this.combinedSetup(composed, chatId);
+      // 同 ensureAgent：resume 必须补 agentOptions（显式切换优先，否则宿主有效路由），
+      // 否则 agent.options 为空导致 persona {{model}} 无值 / 无 provider-model。
+      const route = this.modelResolver.getEffectiveRoute(key);
       const resumed = await this.agents.resume({
         resumeSessionId: target,
+        ...(route ? { agentOptions: route } : {}),
         ...(setup ? { setup } : {}),
       });
       this.registerSession(target);

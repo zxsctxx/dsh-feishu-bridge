@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { CardSession } from "./card-session.js";
-import { buildPanelElement, buildTerminalStatus, panelContent } from "./card-renderer.js";
+import {
+  buildPanelElement,
+  buildTerminalStatus,
+  DEFAULT_FOOTER_LINES,
+  formatFooterContent,
+  panelContent,
+} from "./card-renderer.js";
 
 // ─── 渲染面板选项 ─────────────────────────────────────
 
@@ -85,6 +91,29 @@ describe("工具 detail/output 截断标注", () => {
 });
 
 // ─── 其他调用点不受影响 ────────────────────────────────
+
+describe("页脚 model 字段（模型 + 思考强度）", () => {
+  it("默认行包含 model，渲染为「显示名 + effort」", () => {
+    const s = makeSession();
+    s.footer.model = "DeepSeek V4 Flash";
+    s.footer.reasoningEffort = "max";
+    const content = formatFooterContent(s, DEFAULT_FOOTER_LINES);
+    expect(content).toContain("DeepSeek V4 Flash Max");
+  });
+
+  it("effort=off/none 不显示后缀", () => {
+    const s = makeSession();
+    s.footer.model = "DeepSeek V4 Flash";
+    s.footer.reasoningEffort = "none";
+    const content = formatFooterContent(s, [["model"]]);
+    expect(content).toBe("DeepSeek V4 Flash");
+  });
+
+  it("无模型信息显示未知模型", () => {
+    const s = makeSession();
+    expect(formatFooterContent(s, [["model"]])).toBe("未知模型");
+  });
+});
 
 describe("非三处的 truncate 调用保持原样", () => {
   it("错误信息截断不带标注（buildTerminalStatus 路径）", () => {

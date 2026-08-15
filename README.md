@@ -19,7 +19,7 @@
 
 - **流式卡片输出** — CardKit 原生流式刷新，thinking 与工具步骤面板实时展示（推理正文默认折叠，设 `showThinking: true` 显示）
 - **自动降级保障** — CardKit 不可用时自动降级为静态卡片，再降为纯文本，尽可能送达；用户原消息已撤回时不再打扰
-- **信息页脚** — 终态卡片默认展示状态、用时、首 token 平均延迟、输出速率与缓存命中/输入/输出/上下文占用（`footer.lines` 可自定义布局，可选 model、token、stop_reason、cost 等字段）
+- **信息页脚** — 终态卡片默认展示状态、用时、首 token 平均延迟、输出速率、模型与思考强度，以及缓存命中/输入/输出/上下文占用（`footer.lines` 可自定义布局，可选 model、token、stop_reason、cost 等字段）
 - **访问控制** — allowlist 白名单 + 群聊 @ 校验，未授权请求无法进入 Agent
 - **弹性容错** — 飞书 API 限频（429）与瞬时错误自动退避重试，WebSocket 断线自动重连，回复目标被撤回时回退为新建消息或优雅终止
 - **媒体收发** — 文本/富文本/图片/文件的收发；音频/视频消息识别为占位文本并尝试下载；支持 Reaction 输入指示（处理中 Typing、失败 CrossMark）
@@ -43,6 +43,15 @@ dsh plugin --profile feishu add /path/to/dsh-feishu-bridge
 #   - insert:
 #       - id: feishu-bridge
 #         name: dsh-feishu-bridge
+#
+# 可选：需要 /preset 命令（预设列表/切换/默认）时，再插入 agent-presets 服务行：
+#   （headless profile 需先安装该包，web profile 的 bundle 已自带）
+#   dsh plugin --profile feishu add @deepseek-ai/dsh-agent-presets@0.1.0-rc.6
+#   - insert:
+#       - id: agent-presets
+#         name: '@deepseek-ai/dsh-agent-presets'
+#         config:
+#           default: minimal
 
 # 启动（环境变量提供飞书凭据；bash / PowerShell 语法）
 export FEISHU_APP_ID="你的AppID" FEISHU_APP_SECRET="你的AppSecret"
@@ -96,7 +105,7 @@ dsh --profile web --patch /path/to/dsh-feishu-bridge/feishu.patch.yml
 | `taskTimeoutSec` | 900 | 单轮 Agent 硬超时（秒），超时 abort 并终态封卡 |
 | `sameChatBusyPolicy` | `queue` | 同 chat 忙时：`queue` 排队；`interrupt` 打断当前并只跑最新消息 |
 | `sessionIdleTimeout` | 1800000 | Agent 闲置超时(ms)，超时 dispose，下条消息自动恢复 |
-| `footer` | 两行默认 | 终态卡片页脚布局（`lines` 二维数组）；默认 `status/elapsed/ttft/speed` + `cache_hit/input/output/context`，可选 `model`/`stop_reason`/`cost` 等字段 |
+| `footer` | 两行默认 | 终态卡片页脚布局（`lines` 二维数组）；默认 `status/elapsed/ttft/speed/model` + `cache_hit/input/output/context`（model 显示模型名 + 思考强度，如 `DeepSeek V4 Flash Max`），可选 `stop_reason`/`cost` 等字段 |
 | `debug` | `false` | 调试日志（也可 `FEISHU_DEBUG=1`） |
 | `encryptKey` / `verificationToken` | `""` | 飞书事件加密密钥 / 校验令牌（可选） |
 | `printStrategy` / `printStep` / `printFrequencyMs` | `delay` / `4` / `70` | CardKit 流式打印频率控制 |
@@ -148,7 +157,9 @@ dsh --profile web --patch /path/to/dsh-feishu-bridge/feishu.patch.yml
 - `/preset default <id>` — 设置全局默认预设（作用于未单独设置偏好的 chat）
 - `/preset default clear` — 清除全局默认
 
-生效优先级：**本 chat 偏好 > 全局默认（`/preset default`）> 配置 `preset` > 宿主默认**（`agent-presets.default`）。偏好持久化在 `~/.dsh-feishu-bridge/preset-prefs.json`。
+生效优先级：**本 chat 偏好 > 全局默认（`/preset default`）> 配置 `preset`**。**未显式指定时桥不挂载任何预设，沿用宿主组合（工具全集）**——不会跟随宿主默认预设（如 `minimal`）悄悄收窄工具集。偏好持久化在 `~/.dsh-feishu-bridge/preset-prefs.json`。
+
+> 前提：`/preset` 需要 profile 的宿主组合提供 `agent-presets` 服务。web profile 自带；headless profile（如 feishu）需按上方「方式一」的注释在 `cordis.patch.yml` 插入 `agent-presets` 行，否则命令会提示「宿主未组合 agentPresets」。
 
 ## 本地开发
 

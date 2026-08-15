@@ -7,9 +7,9 @@
 import Schema from "@deepseek-ai/schemastery";
 import type { FooterConfig } from "./types.js";
 
-/** 页面脚注布局的默认两行 */
+/** 页面脚注布局的默认两行（status/耗时/首 token/速率/模型；缓存命中/输入/输出/上下文） */
 export const DEFAULT_FOOTER_LINES: string[][] = [
-  ["status", "elapsed", "ttft", "speed"],
+  ["status", "elapsed", "ttft", "speed", "model"],
   ["cache_hit", "input", "output", "context"],
 ];
 

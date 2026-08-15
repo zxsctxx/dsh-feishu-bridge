@@ -2,7 +2,7 @@
  * DshSessionManager 预设解析测试：currentPreset 优先级与来源标注。
  * 通过 presetPrefsPath 注入临时文件，隔离用户真实偏好。
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -43,7 +43,7 @@ function baseConfig(): BridgeConfig {
   };
 }
 
-function makeManager(configOverrides: Partial<BridgeConfig> = {}) {
+function makeManager(configOverrides: Partial<BridgeConfig> = {}, agentsOverrides: Record<string, unknown> = {}) {
   const config = { ...baseConfig(), ...configOverrides };
   const dir = mkdtempSync(join(tmpdir(), "session-manager-preset-"));
   const presetPrefsPath = join(dir, "preset-prefs.json");
@@ -71,10 +71,16 @@ function makeManager(configOverrides: Partial<BridgeConfig> = {}) {
     get: () => undefined,
     resume: async () => { throw new Error("no persistence in test"); },
     create: async () => { throw new Error("create not expected"); },
+    ...agentsOverrides,
   };
   const logger: any = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} };
   const manager = new DshSessionManager(ctx, agents, config, logger, () => {}, presetPrefsPath);
   return { manager, dir, config };
+}
+
+/** 最小可用的 fake agent（ensureAgent resume 成功路径用） */
+function fakeAgent() {
+  return { status: "idle", session: { events: [] }, cancel: vi.fn(), followup: vi.fn(), whenIdle: vi.fn() };
 }
 
 describe("DshSessionManager 预设解析", () => {
@@ -145,6 +151,30 @@ describe("DshSessionManager 预设解析", () => {
     expect(result.message).toContain("ghost");
     expect(result.message).toContain("code");
     expect(manager.getChatPresetPref("oc_a")).toBeUndefined();
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("ensureAgent resume 分支补齐 agentOptions（回归：重启后 resume 不再报 persona {{model}} 无值）", () => {
+  it("无显式切换时用宿主有效路由填充 agentOptions", async () => {
+    const resume = vi.fn().mockResolvedValue({ agent: fakeAgent(), dispose: vi.fn() });
+    const { manager, dir } = makeManager({ provider: "p", model: "m" }, { resume });
+    const record = await manager.ensureAgent("oc_a");
+    expect(resume).toHaveBeenCalledWith(expect.objectContaining({
+      resumeSessionId: expect.any(String),
+      agentOptions: { provider: "p", model: "m" },
+    }));
+    expect(record.agentPreset).toBeUndefined(); // 未显式指定预设 → 不挂载
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("config 未配置模型时也走 resume（agentOptions 为空则原样传给 resume）", async () => {
+    const resume = vi.fn().mockResolvedValue({ agent: fakeAgent(), dispose: vi.fn() });
+    const { manager, dir } = makeManager({}, { resume });
+    await manager.ensureAgent("oc_a");
+    // 本机 settings.yaml 是否存在都会走到 resume（而非直接抛错）；
+    // 断言 resume 被调用且 resumeSessionId 正确
+    expect(resume).toHaveBeenCalledWith(expect.objectContaining({ resumeSessionId: expect.any(String) }));
     rmSync(dir, { recursive: true, force: true });
   });
 });

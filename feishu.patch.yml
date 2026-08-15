@@ -5,3 +5,11 @@
 - insert:
     - id: feishu-bridge
       name: dsh-feishu-bridge
+
+# 可选：agent-presets 服务行，提供 /preset 命令的预设列表与切换能力。
+# 不插也能跑，但 /preset 会提示「宿主未组合 agentPresets」。
+- insert:
+    - id: agent-presets
+      name: '@deepseek-ai/dsh-agent-presets'
+      config:
+        default: minimal

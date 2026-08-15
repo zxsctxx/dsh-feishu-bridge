@@ -9,9 +9,9 @@ export const FOOTER_ELEMENT_ID = "footer_metrics";
 export const LOADING_HINT_ELEMENT_ID = "context_loading_hint";
 export const LOADING_ELEMENT_ID = "loading_icon";
 
-/** 默认两行布局（status/耗时/首 token/速率；缓存命中/输入/输出/上下文） */
+/** 默认两行布局（status/耗时/首 token/速率/模型；缓存命中/输入/输出/上下文） */
 export const DEFAULT_FOOTER_LINES: FooterFieldId[][] = [
-  ["status", "elapsed", "ttft", "speed"],
+  ["status", "elapsed", "ttft", "speed", "model"],
   ["cache_hit", "input", "output", "context"],
 ];
 
@@ -380,7 +380,15 @@ function formatFooterField(id: FooterFieldId, session: CardSession): string | nu
   }
   if (id === "input") return `输入 ${compactNumber(f.inputTokens)} tok`;
   if (id === "output") return `输出 ${compactNumber(f.outputTokens)} tok`;
-  if (id === "model") return f.model ?? "未知模型";
+  if (id === "model") {
+    if (!f.model) return "未知模型";
+    // 思考强度首字母大写（max → Max）；off/none 视为关闭，不显示后缀
+    const raw = f.reasoningEffort;
+    const effort = raw && raw !== "off" && raw !== "none"
+      ? ` ${raw.charAt(0).toUpperCase()}${raw.slice(1)}`
+      : "";
+    return `${f.model}${effort}`;
+  }
   if (id === "api_calls") return `API ${f.apiCalls}`;
   if (id === "tokens") {
     const input = f.inputTokens ?? 0;

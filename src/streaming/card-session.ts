@@ -6,6 +6,8 @@ export type CardPhase = "creating" | "streaming" | "completing" | "completed" | 
 export type TerminalReason = "normal" | "llm_error" | "user_abort" | "timeout" | "replaced" | "message_unavailable" | "session_shutdown";
 export interface FooterMetrics {
   model?: string;
+  /** 最近一次请求的思考强度（reasoningEffort，如 max/high） */
+  reasoningEffort?: string;
   inputTokens?: number;
   outputTokens?: number;
   reasoningTokens?: number;

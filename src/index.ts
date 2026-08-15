@@ -76,6 +76,14 @@ export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void
   const logger = createLogger(config);
   const agents = ctx.agents;
 
+  // 诊断：/preset 依赖的可选服务是否就绪（agent-presets 行由 profile bundle/patch 提供）
+  try {
+    const presets = (ctx as unknown as { get?: (k: string) => unknown }).get?.("agentPresets");
+    logger.info(`agentPresets service: ${presets ? "available" : "unavailable"}`);
+  } catch {
+    logger.info("agentPresets service: unavailable");
+  }
+
   // ── 飞书层状态 ──
   let client: FeishuClient | null = null;
   let streaming: StreamingCardManager | null = null;

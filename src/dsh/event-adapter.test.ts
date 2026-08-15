@@ -32,6 +32,7 @@ function makeEnv(config: { showThinking?: boolean } = {}) {
     sessionId: SessionId("sess-1"),
     isOwnedSession: (id: unknown) => String(id) === "sess-1",
     chatIdForSession: (id: unknown) => (String(id) === "sess-1" ? "oc_test" : undefined),
+    resolveModelLabel: (provider: string, model: string) => `Display-${model}`,
     getTokenUsage: vi.fn().mockReturnValue({ input: 10, output: 5, cacheRead: 0, cacheWrite: 0 }),
     getLatestRequestStats: vi.fn().mockReturnValue({ inputTokens: 10, contextWindow: 1000 }),
     getStreamMetrics: vi.fn().mockReturnValue({ ttftAvgMs: 3600, outputSpeedTps: 148 }),
@@ -104,6 +105,26 @@ describe("DshEventAdapter", () => {
       error: undefined,
     }));
     expect(env.streaming.onToolEnd).toHaveBeenCalledWith("oc_test", "call-1", "ls 输出", false);
+  });
+
+  it("request/header → footer.model 显示名 + reasoningEffort", () => {
+    const env = makeEnv();
+    env.adapter["handle"](SessionId("sess-1"), makeEvent("request/header", {
+      header: { config: { provider: "opencode", model: "deepseek-v4-flash", reasoningEffort: "max" } },
+      reason: "initial",
+    }));
+    expect(env.activeSession.footer.model).toBe("Display-deepseek-v4-flash");
+    expect(env.activeSession.footer.reasoningEffort).toBe("max");
+  });
+
+  it("assistant/message → footer.model 显示名（source.model）", () => {
+    const env = makeEnv();
+    env.adapter["handle"](SessionId("sess-1"), makeEvent("assistant/message", {
+      turn: 1, step: 0,
+      message: { source: { kind: "model", provider: "opencode", model: "deepseek-v4-flash" }, content: [] },
+      usage: undefined,
+    }));
+    expect(env.activeSession.footer.model).toBe("Display-deepseek-v4-flash");
   });
 
   it("turn/end completed → settle + footer usage + onSettled", async () => {
