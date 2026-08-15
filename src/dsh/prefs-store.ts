@@ -17,6 +17,8 @@ interface PrefsFile {
   overrides: Record<string, ModelRoute>;
   /** sessionKey → 最新 sessionId（fork/new 后更新，重启恢复用） */
   sessionIds: Record<string, string>;
+  /** sessionKey → reasoningEffort override（per-chat 思考强度） */
+  effortOverrides: Record<string, string>;
 }
 
 export class PrefsStore {
@@ -24,6 +26,8 @@ export class PrefsStore {
   private overrides = new Map<string, ModelRoute>();
   /** per-key 最新 sessionId（内存态） */
   private sessionIds = new Map<string, string>();
+  /** per-key 思考强度 override（内存态） */
+  private effortOverrides = new Map<string, string>();
   /** 隔离偏好文件路径 */
   private readonly prefsPath: string;
   private readonly debugLog?: DebugFn;
@@ -72,6 +76,23 @@ export class PrefsStore {
     return deleted;
   }
 
+  // ── EffortOverride 操作 ──
+
+  getEffortOverride(sessionKey: string): string | undefined {
+    return this.effortOverrides.get(sessionKey);
+  }
+
+  setEffortOverride(sessionKey: string, effort: string): void {
+    this.effortOverrides.set(sessionKey, effort);
+    this.write();
+  }
+
+  clearEffortOverride(sessionKey: string): boolean {
+    const deleted = this.effortOverrides.delete(sessionKey);
+    if (deleted) this.write();
+    return deleted;
+  }
+
   // ── 私有方法 ──
 
   private load(): void {
@@ -93,6 +114,13 @@ export class PrefsStore {
           }
         }
       }
+      if (data.effortOverrides && typeof data.effortOverrides === "object") {
+        for (const [key, effort] of Object.entries(data.effortOverrides)) {
+          if (typeof effort === "string" && effort) {
+            this.effortOverrides.set(key, effort);
+          }
+        }
+      }
     } catch (err) {
       this.debugLog?.(`loadPrefs failed: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -104,6 +132,7 @@ export class PrefsStore {
       const data: PrefsFile = {
         overrides: Object.fromEntries(this.overrides.entries()),
         sessionIds: Object.fromEntries(this.sessionIds.entries()),
+        effortOverrides: Object.fromEntries(this.effortOverrides.entries()),
       };
       writeFileSync(this.prefsPath, JSON.stringify(data, null, 2), "utf8");
     } catch (err) {

@@ -17,8 +17,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { SessionId, type SessionEvent, type UserMessage } from "@deepseek-ai/dsh-session";
 import type { Context } from "@deepseek-ai/cordis";
-import { createUserMessage, type ContentBlock } from "@deepseek-ai/dsh-llm";
-import type { Agent, AgentHandle, AgentSetup } from "@deepseek-ai/dsh-agent";
+import { createUserMessage, ReasoningEffortId, type ContentBlock } from "@deepseek-ai/dsh-llm";
+import { installModelSelection, type Agent, type AgentHandle, type AgentSetup } from "@deepseek-ai/dsh-agent";
 import type { BridgeConfig } from "../config.js";
 import type { Logger } from "../types.js";
 import { ModelResolver, type ModelRoute } from "./model-resolver.js";
@@ -455,23 +455,36 @@ export class DshSessionManager {
     }
   }
 
-  /** 组装 setup：preset 挂载 + 插件自带的 scoped 贡献（飞书工具，绑定 chatId） */
+  /** 组装 setup：preset 挂载 + 插件自带的 scoped 贡献（飞书工具 + 思考强度 selection） */
   private combinedSetup(composed: PresetComposition, chatId: string): AgentSetup | undefined {
     const { setup } = composed;
     const withTools = this.config.registerBridgeTools;
+    const key = this.sessionKeyFor(chatId);
+    const effort = this.modelResolver.getEffortOverride(key);
+    const route = this.modelResolver.getEffectiveRoute(key);
+    // 仅当存在 effort override 且 route 完整时才挂 installModelSelection：
+    // selection.current 会覆盖 provider/model/effort，必须三者齐全；
+    // 无 override 时不挂，让 adapter 默认 effort 生效（避免清除继承值）
+    const selectionInstall =
+      effort && route
+        ? (agentCtx: Context) =>
+            installModelSelection(agentCtx, {
+              current: { provider: route.provider, model: route.model, reasoningEffort: ReasoningEffortId(effort) },
+              assembled: undefined,
+            })
+        : undefined;
 
-    if (withTools && setup) {
-      return async (agentCtx: Context) => {
-        await setup(agentCtx);
-        this.setupExtra(agentCtx, chatId);
-      };
-    }
-    if (withTools) {
-      return (agentCtx: Context) => {
-        this.setupExtra(agentCtx, chatId);
-      };
-    }
-    return setup;
+    const contributions: Array<(agentCtx: Context) => void> = [];
+    if (selectionInstall) contributions.push(selectionInstall);
+    if (withTools) contributions.push((agentCtx) => this.setupExtra(agentCtx, chatId));
+
+    if (contributions.length === 0) return setup;
+
+    const inline = async (agentCtx: Context) => {
+      if (setup) await setup(agentCtx);
+      for (const fn of contributions) fn(agentCtx);
+    };
+    return inline;
   }
 
   /** 获取或恢复或创建 chat 的 agent（live → resume → create） */
@@ -611,14 +624,17 @@ export class DshSessionManager {
     }
   }
 
-  /** 切换模型：fork chat 当前会话 → 以新模型创建子会话（对齐 dsh-qqbot setModelOverride） */
-  async setModelOverride(chatId: string, route: ModelRoute): Promise<void> {
-    const key = this.sessionKeyFor(chatId);
-    this.modelResolver.setOverride(key, route);
-
+  /**
+   * fork 重建 chat 的 agent（切换模型/思考强度的公共路径）。
+   *
+   * 调用方须先 setOverride/setEffortOverride 写好偏好；combinedSetup 会
+   * 自动把当前 effort override 注入新 agent 的 model-selection。route 仅
+   * 用于 agentOptions（provider/model），不在此读 effort。
+   */
+  private async rebuildViaFork(chatId: string, key: string, route: ModelRoute, logTag: string): Promise<void> {
     const record = this.records.get(key);
     if (!record) {
-      this.logger.info(`model pref saved (no active session): chat=${chatId} key=${key} → ${route.provider}/${route.model}`);
+      this.logger.info(`pref saved (no active session): chat=${chatId} key=${key} ${logTag}`);
       return;
     }
 
@@ -668,7 +684,84 @@ export class DshSessionManager {
     });
 
     await oldHandle.dispose().catch(() => {});
-    this.logger.info(`model switched via fork: chat=${chatId} key=${key} → ${route.provider}/${route.model} sessionId=${childId}`);
+    this.logger.info(`rebuild via fork: chat=${chatId} key=${key} ${logTag} sessionId=${childId}`);
+  }
+
+  /**
+   * 切换模型：fork 重建。若现有 effort override 不被新模型支持则清除。
+   * 返回额外提示（如 effort 被重置），由调用方拼入回复。
+   */
+  async setModelOverride(chatId: string, route: ModelRoute): Promise<string | undefined> {
+    const key = this.sessionKeyFor(chatId);
+    this.modelResolver.setOverride(key, route);
+    const dropped = await this.dropEffortIfUnsupported(key, route);
+    await this.rebuildViaFork(chatId, key, route, `model → ${route.provider}/${route.model}`);
+    if (dropped) return `注意：新模型不支持思考强度 ${dropped}，已重置为默认。可用 /reasoning 查看可选项。`;
+    return undefined;
+  }
+
+  /**
+   * 设置 per-chat 思考强度 override 并 fork 重建。
+   * 校验当前模型支持该 effort，不支持抛错（由命令层 catch）。
+   */
+  async setReasoningEffort(chatId: string, effort: string): Promise<void> {
+    const key = this.sessionKeyFor(chatId);
+    const route = this.modelResolver.getEffectiveRoute(key);
+    if (!route) throw new Error("无有效模型，无法设置思考强度；请先用 /model 指定模型。");
+    const info = await this.modelResolver.resolveReasoningInfo(route.provider, route.model);
+    if (!info) throw new Error(`${route.provider}/${route.model} 不支持思考强度调节。`);
+    const matched = info.efforts.find((e) => e.id === effort);
+    if (!matched) {
+      throw new Error(`${route.provider}/${route.model} 不支持思考强度 ${effort}，可选: ${info.efforts.map((e) => e.id).join(", ")}。`);
+    }
+    this.modelResolver.setEffortOverride(key, effort);
+    await this.rebuildViaFork(chatId, key, route, `effort → ${effort}`);
+  }
+
+  /** 清除 per-chat 思考强度 override 并 fork 重建（恢复 adapter 默认） */
+  async clearReasoningEffort(chatId: string): Promise<void> {
+    const key = this.sessionKeyFor(chatId);
+    this.modelResolver.clearEffortOverride(key);
+    const route = this.modelResolver.getEffectiveRoute(key);
+    if (route) await this.rebuildViaFork(chatId, key, route, "effort → default");
+  }
+
+  /**
+   * 查询当前 chat 的思考强度状态（供 /reasoning 展示）。
+   * current = 显式 override > "(默认)"；efforts 为当前模型可选列表。
+   */
+  async getReasoningStatus(chatId: string): Promise<{
+    model: string;
+    current: string;
+    efforts: Array<{ id: string; name: string; description?: string }>;
+    defaultEffort?: string;
+  }> {
+    const key = this.sessionKeyFor(chatId);
+    const route = this.modelResolver.getEffectiveRoute(key);
+    if (!route) {
+      return { model: "（宿主默认）", current: "—", efforts: [] };
+    }
+    const info = await this.modelResolver.resolveReasoningInfo(route.provider, route.model);
+    const override = this.modelResolver.getEffortOverride(key);
+    return {
+      model: `${route.provider}/${route.model}`,
+      current: override ?? "（默认）",
+      efforts: info?.efforts ?? [],
+      defaultEffort: info?.defaultEffort,
+    };
+  }
+
+  /** 若 effort override 不被 route 指定模型支持，清除并返回被清除的 effort */
+  private async dropEffortIfUnsupported(key: string, route: ModelRoute): Promise<string | undefined> {
+    const effort = this.modelResolver.getEffortOverride(key);
+    if (!effort) return undefined;
+    const info = await this.modelResolver.resolveReasoningInfo(route.provider, route.model);
+    const supported = info?.efforts.some((e) => e.id === effort) ?? false;
+    if (!supported) {
+      this.modelResolver.clearEffortOverride(key);
+      return effort;
+    }
+    return undefined;
   }
 
   clearModelOverride(chatId: string): void {

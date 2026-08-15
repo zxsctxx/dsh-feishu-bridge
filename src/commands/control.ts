@@ -73,8 +73,56 @@ export const modelCommand: CommandHandler = {
       const busyNote = ctx.manager.recordFor(ctx.chatId) && !ctx.manager.isIdleFor(ctx.chatId)
         ? "\n（当前任务已中断，会话已用新模型重建，可重新发送消息）"
         : "";
-      await ctx.manager.setModelOverride(ctx.chatId, route);
-      return `已切换模型: ${route.provider}/${route.model}${busyNote}`;
+      const note = await ctx.manager.setModelOverride(ctx.chatId, route);
+      return [`已切换模型: ${route.provider}/${route.model}${busyNote}`, note]
+        .filter(Boolean)
+        .join("\n");
+    } catch (error) {
+      return `切换失败：${error instanceof Error ? error.message : String(error)}`;
+    }
+  },
+};
+
+export const reasoningCommand: CommandHandler = {
+  name: "/reasoning",
+  help: "查看/切换思考强度（/reasoning [级别]；/reasoning default 重置）",
+  async handle(ctx) {
+    const arg = ctx.args.trim();
+
+    if (!arg) {
+      const s = await ctx.manager.getReasoningStatus(ctx.chatId);
+      if (s.efforts.length === 0) {
+        return `当前模型 ${s.model} 不支持思考强度调节。`;
+      }
+      return [
+        `当前模型: ${s.model}`,
+        `思考强度: ${s.current}${s.defaultEffort ? `（模型默认 ${s.defaultEffort}）` : ""}`,
+        "",
+        "可选级别:",
+        ...s.efforts.map((e) => `  ${e.id} - ${e.name}${e.description ? `（${e.description}）` : ""}`),
+        "",
+        "用法: /reasoning <级别>，如 /reasoning high",
+        "重置: /reasoning default",
+      ].join("\n");
+    }
+
+    const effort = arg.toLowerCase();
+
+    if (effort === "default" || effort === "reset" || effort === "off") {
+      try {
+        await ctx.manager.clearReasoningEffort(ctx.chatId);
+        return "已重置思考强度为模型默认。";
+      } catch (error) {
+        return `重置失败：${error instanceof Error ? error.message : String(error)}`;
+      }
+    }
+
+    try {
+      const busyNote = ctx.manager.recordFor(ctx.chatId) && !ctx.manager.isIdleFor(ctx.chatId)
+        ? "\n（当前任务已中断，会话已重建，可重新发送消息）"
+        : "";
+      await ctx.manager.setReasoningEffort(ctx.chatId, effort);
+      return `已切换思考强度: ${effort}${busyNote}`;
     } catch (error) {
       return `切换失败：${error instanceof Error ? error.message : String(error)}`;
     }

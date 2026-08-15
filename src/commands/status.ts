@@ -100,6 +100,7 @@ export const helpCommand: CommandHandler = {
       "  /stop      - 中断当前处理，清空排队",
       "  /queue     - 查看排队状态",
       "  /model     - 查看/切换模型（如 /model deepseek/deepseek-chat）",
+      "  /reasoning - 查看/切换思考强度（如 /reasoning high；/reasoning default 重置）",
       "  /preset    - 查看/切换 Agent 预设（/preset [id]；/preset default [id] 设全局默认）",
       "  /status    - 查看 DSH 状态",
       "  /help      - 显示帮助",

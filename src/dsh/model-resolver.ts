@@ -99,6 +99,52 @@ export class ModelResolver {
     this.prefs.clearSessionId(sessionKey);
   }
 
+  // ── 思考强度（reasoningEffort）override ──
+
+  /** 指定 sessionKey 的显式思考强度 override（无则为 undefined） */
+  getEffortOverride(sessionKey: string): string | undefined {
+    return this.prefs.getEffortOverride(sessionKey);
+  }
+
+  /** 设置 per-chat 思考强度 override 并持久化 */
+  setEffortOverride(sessionKey: string, effort: string): void {
+    this.prefs.setEffortOverride(sessionKey, effort);
+  }
+
+  /** 清除 per-chat 思考强度 override 并持久化 */
+  clearEffortOverride(sessionKey: string): boolean {
+    return this.prefs.clearEffortOverride(sessionKey);
+  }
+
+  /**
+   * 查询指定 provider/model 的可选思考强度（adapter 实时元数据）
+   *
+   * 来源 LlmService.resolveModelInfo，跨 provider 统一。
+   * 返回 undefined 表示模型不支持思考或服务不可用。
+   */
+  async resolveReasoningInfo(
+    provider: string,
+    model: string,
+  ): Promise<{ efforts: Array<{ id: string; name: string; description?: string }>; defaultEffort?: string } | undefined> {
+    const llm = this.getService("llm") as
+      | { resolveModelInfo?(provider: string, model: string, signal?: AbortSignal): Promise<{
+          reasoning?: { efforts: Array<{ id: string; name: string; description?: string }>; defaultEffort?: string };
+        }> }
+      | undefined;
+    if (!llm || typeof llm.resolveModelInfo !== "function") return undefined;
+    try {
+      const info = await llm.resolveModelInfo(provider, model);
+      const reasoning = info?.reasoning;
+      if (!reasoning || !Array.isArray(reasoning.efforts) || reasoning.efforts.length === 0) return undefined;
+      return { efforts: reasoning.efforts, defaultEffort: reasoning.defaultEffort };
+    } catch (err) {
+      if (this.config.debug) {
+        this.logger?.debug(`ModelResolver: resolveModelInfo failed for ${provider}/${model}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      return undefined;
+    }
+  }
+
   /**
    * 解析默认模型路由（不含 per-chat 偏好）
    */
@@ -177,10 +223,9 @@ export class ModelResolver {
     return undefined;
   }
 
-  /** 统一的 Cordis 服务访问 */
+  /** 统一的 Cordis 服务访问（只用 ctx.get，属性访问需 inject 声明会抛错） */
   private getService(name: string): unknown {
-    const ctxAny = this.ctx as unknown as Record<string, unknown>;
-    return ctxAny[name] ??
-      (typeof ctxAny.get === "function" ? (ctxAny.get as (key: string) => unknown)(name) : undefined);
+    const ctxAny = this.ctx as unknown as { get?(key: string): unknown };
+    return typeof ctxAny.get === "function" ? ctxAny.get(name) : undefined;
   }
 }

@@ -7,7 +7,7 @@
 import { warn, describeError } from "../log.js";
 import type { CommandContext, CommandHandler } from "./types.js";
 import { newCommand, resumeCommand } from "./session.js";
-import { modelCommand, queueCommand, stopCommand } from "./control.js";
+import { modelCommand, queueCommand, reasoningCommand, stopCommand } from "./control.js";
 import { presetCommand } from "./preset.js";
 import { feishuCommand, helpCommand, statusCommand } from "./status.js";
 
@@ -20,6 +20,7 @@ const HANDLERS: CommandHandler[] = [
   stopCommand,
   queueCommand,
   modelCommand,
+  reasoningCommand,
   presetCommand,
   statusCommand,
   helpCommand,
