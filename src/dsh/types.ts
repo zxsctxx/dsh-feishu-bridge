@@ -13,6 +13,8 @@ export type { Agent, AgentHandle, AgentSetup, SessionId, SessionEvent, UserMessa
 /** agent-presets 服务接口（可选，部署中可能没有） */
 export interface AgentPresetsLike {
   readonly defaultId: string;
+  /** 罗列当前所有可用预设（展示用） */
+  list(): Promise<Array<{ id: string; name?: string; description?: string }>>;
   resolve(id?: string): Promise<{ id: string }>;
   mount(agentCtx: Context, id?: string): Promise<unknown>;
 }

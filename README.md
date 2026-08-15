@@ -24,7 +24,7 @@
 - **弹性容错** — 飞书 API 限频（429）与瞬时错误自动退避重试，WebSocket 断线自动重连，回复目标被撤回时回退为新建消息或优雅终止
 - **媒体收发** — 文本/富文本/图片/文件的收发；音频/视频消息识别为占位文本并尝试下载；支持 Reaction 输入指示（处理中 Typing、失败 CrossMark）
 - **实用工具** — `send_to_feishu` / `send_image_to_feishu` / `send_file_to_feishu` / `ask_feishu`（注册进各 chat agent 的 scoped 工具集）
-- **会话管理** — `/new` 清空上下文；`/resume` 列出/恢复持久化会话；`/model` 切换模型（fork 重建）；`/stop` 中断
+- **会话管理** — `/new` 清空上下文；`/resume` 列出/恢复持久化会话；`/model` 切换模型（fork 重建）；`/preset` 切换/默认 Agent 预设；`/stop` 中断
 
 ## 安装
 
@@ -84,7 +84,7 @@ dsh --profile web --patch /path/to/dsh-feishu-bridge/feishu.patch.yml
 | `appId` / `appSecret` | 必填 | 飞书应用凭据（或 `FEISHU_APP_ID` / `FEISHU_APP_SECRET`） |
 | `domain` | `feishu` | `feishu` 或 `lark` |
 | `provider` / `model` | 宿主默认 | LLM 路由；缺省沿用宿主默认模型 |
-| `preset` | 宿主默认 | Agent preset id（工具集/prompt 等） |
+| `preset` | 宿主默认 | Agent preset id（工具集/prompt 等）；可用 `/preset` 命令运行时覆盖（持久化） |
 | `cwd` | `process.cwd()` | Agent 工作目录 |
 | `registerBridgeTools` | `true` | 是否把飞书工具注册进每个 chat 的 agent |
 | `flushIntervalMs` | 200 | 流式刷新节流间隔(ms) |
@@ -133,10 +133,22 @@ dsh --profile web --patch /path/to/dsh-feishu-bridge/feishu.patch.yml
 | `/resume` | 列出/恢复历史会话（`/resume` 列表；`/resume 3` 按序号；`/resume <id 前缀>` 前缀匹配；需宿主启用会话持久化） |
 | `/stop` | 中断当前处理，清空排队 |
 | `/queue` | 查看队列状态 |
-| `/model` | 查看/切换模型（`/model deepseek/deepseek-chat`） |
-| `/status` | 查看 DSH 状态（会话/模型/token 统计） |
+| `/model` | 查看/切换模型（`/model deepseek/deepseek-chat`，fork 重建会话） |
+| `/preset` | 查看/切换 Agent 预设（`/preset code`；`/preset default code` 设全局默认；`/preset default clear` 清除） |
+| `/status` | 查看 DSH 状态（会话/模型/预设/token 统计） |
 | `/feishu status` / `monitor [reset]` / `config [reload]` / `doctor` / `help` | 飞书连接管理（配置改动会自动热重载，`config reload` 仅手动触发） |
 | `/help` | 显示帮助 |
+
+### Agent 预设（`/preset`）
+
+预设定义 Agent 的工具集/prompt/挂载组合（部署内置 `code`/`minimal`/`standard`/`cordis`，也可在 `~/.dsh/.agent-presets/` 自建）。本桥通过斜杠命令运行时切换，无需改配置：
+
+- `/preset` — 查看当前生效预设（含来源）与全部可用预设
+- `/preset <id>` — 切换本 chat 的预设：保存 per-chat 偏好并立即生效（优先 fork 保留上下文；fork 不可用时重置会话）
+- `/preset default <id>` — 设置全局默认预设（作用于未单独设置偏好的 chat）
+- `/preset default clear` — 清除全局默认
+
+生效优先级：**本 chat 偏好 > 全局默认（`/preset default`）> 配置 `preset` > 宿主默认**（`agent-presets.default`）。偏好持久化在 `~/.dsh-feishu-bridge/preset-prefs.json`。
 
 ## 本地开发
 

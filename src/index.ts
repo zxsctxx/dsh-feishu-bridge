@@ -29,6 +29,8 @@ import { dispatchCommand } from "./commands/index.js";
 
 // ── Cordis 插件元数据 ──
 export const name = "feishu-bridge";
+// agentPresets 仅为可选增强（session-manager.composePreset 内部降级），
+// 不声明为必选 inject：宿主未提供该服务时插件照常运行
 export const inject = ["agents"];
 export const Config = ConfigSchema;
 

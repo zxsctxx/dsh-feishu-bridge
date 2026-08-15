@@ -22,6 +22,7 @@ import type { Agent, AgentHandle, AgentSetup } from "@deepseek-ai/dsh-agent";
 import type { BridgeConfig } from "../config.js";
 import type { Logger } from "../types.js";
 import { ModelResolver, type ModelRoute } from "./model-resolver.js";
+import { PresetPrefsStore } from "./preset-prefs.js";
 import { streamMetricsFromEvents } from "../session/usage.js";
 import type {
   AgentPresetsLike,
@@ -45,6 +46,8 @@ export class DshSessionManager {
   /** chat 会话记录表：sessionKey → SessionRecord（per-chat 隔离） */
   private readonly records = new Map<string, SessionRecord>();
   private readonly modelResolver: ModelResolver;
+  /** 预设偏好持久化（per-chat + 全局默认），运行时命令可改 */
+  private readonly presetPrefs: PresetPrefsStore;
   /** 本插件管理过的 sessionId 集合：/new、/model fork 后旧会话的
    *  turn/end（封口事件）仍会到达，adapter 据此决定是否处理 */
   private readonly ownedSessionIds = new Set<string>();
@@ -70,8 +73,14 @@ export class DshSessionManager {
     private readonly logger: Logger,
     /** 创建/恢复 agent 时的额外 scoped setup（注册飞书工具等；chatId 为该 agent 所属会话） */
     private readonly setupExtra: (agentCtx: Context, chatId: string) => void = () => {},
+    /** 预设偏好文件路径覆盖（仅供测试注入临时路径，避免污染用户真实偏好） */
+    presetPrefsPath?: string,
   ) {
     this.modelResolver = new ModelResolver(ctx, config, logger);
+    this.presetPrefs = new PresetPrefsStore(
+      config.debug ? (msg) => this.logger?.debug(msg) : undefined,
+      presetPrefsPath,
+    );
   }
 
   /** chat 对应的会话 key（per-chat 隔离） */
@@ -212,16 +221,180 @@ export class DshSessionManager {
     return lines.join("\n");
   }
 
+  // ── 预设管理（/preset） ──
+
+  private getPresets(): AgentPresetsLike | undefined {
+    try {
+      const ctxAny = this.ctx as unknown as Record<string, unknown>;
+      // 测试桩直接挂属性；真实宿主须走 ctx.get（未 inject 的属性访问会抛错）
+      const direct = ctxAny.agentPresets as AgentPresetsLike | undefined;
+      if (direct) return direct;
+      const viaGet = typeof ctxAny.get === "function"
+        ? (ctxAny.get as (key: string) => unknown)("agentPresets")
+        : undefined;
+      return viaGet as AgentPresetsLike | undefined;
+    } catch {
+      // agentPresets 服务未注入，降级跳过
+      return undefined;
+    }
+  }
+
+  /** 当前生效预设法定的 id（解析优先级：per-chat > 全局默认 > config.preset；全空则不挂） */
+  private effectivePresetId(key: string): string | undefined {
+    return this.presetPrefs.getChatPreset(key) ?? this.presetPrefs.getDefault() ?? this.config.preset;
+  }
+
+  /** 当前生效预设及其来源（/preset 展示用；host 表示未显式指定） */
+  currentPreset(chatId: string): { presetId?: string; source: "per-chat" | "global" | "config" | "host" } {
+    const key = this.sessionKeyFor(chatId);
+    const perChat = this.presetPrefs.getChatPreset(key);
+    if (perChat) return { presetId: perChat, source: "per-chat" };
+    const global = this.presetPrefs.getDefault();
+    if (global) return { presetId: global, source: "global" };
+    if (this.config.preset) return { presetId: this.config.preset, source: "config" };
+    // 不跟随宿主自动挂默认：保持「未显式指定 = 宿主组合」，避免 settings 默认预设
+    // （如 minimal）突然收窄桥的工具集。
+    return { presetId: undefined, source: "host" };
+  }
+
+  /** /preset default：全局默认预设（无 per-chat 偏好且 config.preset 未设时生效） */
+  getDefaultPresetPref(): string | undefined {
+    return this.presetPrefs.getDefault();
+  }
+
+  setDefaultPreset(id: string | undefined): void {
+    this.presetPrefs.setDefault(id);
+    this.logger.info(`preset default updated: ${id ?? "(cleared)"}`);
+  }
+
+  /** per-chat 预设偏好读写 */
+  getChatPresetPref(chatId: string): string | undefined {
+    return this.presetPrefs.getChatPreset(this.sessionKeyFor(chatId));
+  }
+
+  setChatPreset(chatId: string, id: string): void {
+    this.presetPrefs.setChatPreset(this.sessionKeyFor(chatId), id);
+    this.logger.info(`preset pref saved: chat=${chatId} → ${id}`);
+  }
+
+  clearChatPreset(chatId: string): boolean {
+    const deleted = this.presetPrefs.clearChatPreset(this.sessionKeyFor(chatId));
+    if (deleted) this.logger.info(`preset pref cleared: chat=${chatId}`);
+    return deleted;
+  }
+
+  /** 罗列可用预设（/preset 列表用；宿主未组合时返回 []） */
+  async listAvailablePresets(): Promise<Array<{ id: string; name?: string; description?: string }>> {
+    const presets = this.getPresets();
+    if (!presets || typeof presets.list !== "function") return [];
+    try {
+      const rows = await presets.list();
+      return rows.map((row) => ({ id: row.id, name: row.name, description: row.description }));
+    } catch (err) {
+      this.logger.warn(`listAvailablePresets failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  }
+
+  /** 宿主默认预设 id（settings agent-presets.default / agentPresets config.default） */
+  get hostDefaultPresetId(): string | undefined {
+    return this.getPresets()?.defaultId;
+  }
+
+  /** 校验预设 id 存在；resolve 成功返回规范化 id，失败返回 undefined */
+  async resolvePresetId(presetId: string): Promise<string | undefined> {
+    const presets = this.getPresets();
+    if (!presets) return undefined;
+    try {
+      const resolved = await presets.resolve(presetId);
+      return resolved.id;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** /preset <id>：保存 per-chat 偏好并让当前会话切到新预设（优先 fork 复制历史，失败重置） */
+  async switchPreset(chatId: string, presetId: string): Promise<{ ok: boolean; message: string }> {
+    const key = this.sessionKeyFor(chatId);
+    const presets = this.getPresets();
+    if (!presets) {
+      return { ok: false, message: "宿主未组合 agentPresets 服务，无法切换预设。" };
+    }
+    try {
+      const resolved = await presets.resolve(presetId);
+      presetId = resolved.id;
+    } catch (err) {
+      const available = (err as { available?: readonly string[] })?.available;
+      const hint = available && available.length > 0 ? `\n可用预设: ${available.join(", ")}` : "";
+      return { ok: false, message: `预设不存在: ${presetId}${hint}` };
+    }
+
+    this.setChatPreset(chatId, presetId);
+
+    const record = this.records.get(key);
+    if (!record) {
+      this.logger.info(`preset pref saved (no active session): key=${key} → ${presetId}`);
+      return { ok: true, message: `已保存预设偏好: ${presetId}（下次消息创建会话时生效）` };
+    }
+
+    const sessionsService = this.getSessionsService();
+    if (!sessionsService) {
+      await this.disposeRecordFor(key);
+      return { ok: true, message: `已切换预设: ${presetId}（fork 不可用，已重置当前会话）` };
+    }
+
+    let seed: readonly SessionEvent[];
+    try {
+      seed = sessionsService.fork(record.agent.session).events;
+    } catch (err) {
+      this.logger.warn(`preset switch fork failed, fallback to dispose: key=${key} err=${err instanceof Error ? err.message : String(err)}`);
+      await this.disposeRecordFor(key);
+      return { ok: true, message: `已切换预设: ${presetId}（历史复制失败，已重置当前会话）` };
+    }
+
+    const childId = SessionId(randomUUID());
+    const composed = await this.composePreset(this.effectivePresetId(key));
+    const route = this.modelResolver.getEffectiveRoute(key);
+    const setup = this.combinedSetup(composed, chatId);
+    const created = await this.agents.create({
+      sessionId: childId,
+      seed,
+      meta: {
+        cwd: this.config.cwd || process.cwd(),
+        parentSession: record.sessionId,
+        seedLength: seed.length,
+        ...(composed.agentPreset ? { agentPreset: composed.agentPreset } : {}),
+      },
+      ...(route ? { agentOptions: route } : {}),
+      ...(setup ? { setup } : {}),
+    });
+
+    this.registerSession(childId);
+    this.modelResolver.setSessionId(key, childId);
+
+    const oldHandle = record.handle;
+    this.records.set(key, {
+      sessionKey: key,
+      sessionId: childId,
+      agent: created.agent,
+      handle: created,
+      lastActivity: Date.now(),
+      agentPreset: composed.agentPreset,
+    });
+
+    await oldHandle.dispose().catch(() => {});
+    this.logger.info(`preset switched via fork: chat=${chatId} key=${key} → ${presetId} sessionId=${childId}`);
+    return { ok: true, message: `已切换预设: ${presetId}（保留上下文，fork 为新会话）` };
+  }
+
   // ── 会话生命周期管理 ──
 
   private async composePreset(presetId?: string): Promise<PresetComposition> {
-    let presets: AgentPresetsLike | undefined;
-    try {
-      presets = (this.ctx as unknown as Record<string, unknown>).agentPresets as AgentPresetsLike | undefined;
-    } catch {
-      // agentPresets 服务未注入，降级跳过
-    }
+    // 未显式指定预设时不挂载任何组合：保持宿主组合（工具全集），
+    // 避免跟随宿主默认预设（settings agent-presets.default）悄悄收窄能力。
+    if (!presetId) return {};
 
+    const presets = this.getPresets();
     if (!presets) return {};
 
     try {
@@ -283,7 +456,7 @@ export class DshSessionManager {
       this.logger.info(`reusing live agent: key=${key}`);
     } else {
       try {
-        const composed = await this.composePreset(this.config.preset);
+        const composed = await this.composePreset(this.effectivePresetId(key));
         agentPreset = composed.agentPreset;
         const resumeRoute = this.modelResolver.getResumeRoute(key);
         const setup = this.combinedSetup(composed, chatId);
@@ -298,7 +471,7 @@ export class DshSessionManager {
       } catch (err) {
         // resume 失败（持久化后端缺失/损坏等）降级为全新创建；记录原因避免掩盖故障
         this.logger.warn(`resume failed, creating new: key=${key} err=${err instanceof Error ? err.message : String(err)}`);
-        const composed = await this.composePreset(this.config.preset);
+        const composed = await this.composePreset(this.effectivePresetId(key));
         agentPreset = composed.agentPreset;
         const setup = this.combinedSetup(composed, chatId);
         const created = await this.agents.create({
@@ -366,7 +539,7 @@ export class DshSessionManager {
     await this.disposeRecordFor(key);
     const target = SessionId(sessionId);
     try {
-      const composed = await this.composePreset(this.config.preset);
+      const composed = await this.composePreset(this.effectivePresetId(key));
       const setup = this.combinedSetup(composed, chatId);
       const resumed = await this.agents.resume({
         resumeSessionId: target,
@@ -418,7 +591,7 @@ export class DshSessionManager {
     }
 
     const childId = SessionId(randomUUID());
-    const composed = await this.composePreset(this.config.preset);
+    const composed = await this.composePreset(this.effectivePresetId(key));
     const setup = this.combinedSetup(composed, chatId);
     const created = await this.agents.create({
       sessionId: childId,
