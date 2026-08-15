@@ -160,9 +160,9 @@ describe("正常 CardKit 流式路径", () => {
     expect(session.cardId).toBe("card_1");
     expect(session.cardMessageId).toBe("msg_for_card_1");
 
-    mgr.onTextDelta("你好");
-    mgr.onTextDelta("，世界");
-    await mgr.settle();
+    mgr.onTextDelta("oc_chat","你好");
+    mgr.onTextDelta("oc_chat","，世界");
+    await mgr.settle("oc_chat");
 
     expect(cardkit.contentsFor("answer_content").at(-1)).toContain("你好，世界");
 
@@ -190,9 +190,9 @@ describe("正常 CardKit 流式路径", () => {
     const mgr = manager(cardkit, fallback);
 
     await mgr.start("oc_chat", "om_user");
-    mgr.onTextDelta("部分输出");
-    mgr.recordError("provider 返回 500");
-    const session = await mgr.settle();
+    mgr.onTextDelta("oc_chat","部分输出");
+    mgr.recordError("oc_chat","provider 返回 500");
+    const session = await mgr.settle("oc_chat");
 
     expect(session?.phase).toBe("failed");
     expect(session?.terminalReason).toBe("llm_error");
@@ -210,8 +210,8 @@ describe("原消息被撤回（message_unavailable）", () => {
     const mgr = manager(cardkit, fallback);
 
     const session = await mgr.start("oc_chat", "om_user");
-    mgr.onTextDelta("内容");
-    await mgr.settle();
+    mgr.onTextDelta("oc_chat","内容");
+    await mgr.settle("oc_chat");
 
     expect(session.terminalReason).toBe("message_unavailable");
     expect(session.phase).toBe("terminated");
@@ -230,7 +230,7 @@ describe("空正文兜底", () => {
 
     const session = await mgr.start("oc_chat", "om_user");
     session.footer.stopReason = "end_turn";
-    await mgr.settle();
+    await mgr.settle("oc_chat");
 
     expect(session.answer).toContain("未生成文本回复");
     expect(session.answer).toContain("end_turn");
@@ -244,7 +244,7 @@ describe("空正文兜底", () => {
 
     const session = await mgr.start("oc_chat", "om_user");
     session.footer.stopReason = "end_turn";
-    await mgr.settle();
+    await mgr.settle("oc_chat");
 
     expect(fallback.messages).toHaveLength(1);
     expect(fallback.messages[0].text).toContain("未生成文本回复");
@@ -263,8 +263,8 @@ describe("长回答 rollover 续卡", () => {
 
     // 每段远超单卡上限的一小部分，累计必然触发多次续卡
     const paragraphs = Array.from({ length: 12 }, (_, i) => `段落${i}：${"内容".repeat(20)}`);
-    for (const p of paragraphs) mgr.onTextDelta(`${p}\n\n`);
-    await mgr.settle();
+    for (const p of paragraphs) mgr.onTextDelta("oc_chat",`${p}\n\n`);
+    await mgr.settle("oc_chat");
 
     // 至少建了 2 张卡
     expect(cardkit.countOf("createCard")).toBeGreaterThanOrEqual(2);
@@ -282,8 +282,8 @@ describe("长回答 rollover 续卡", () => {
     const mgr = manager(cardkit, fallback, { maxAnswerElementChars: 10000 });
 
     await mgr.start("oc_chat", "om_user");
-    mgr.onTextDelta("短答案");
-    await mgr.settle();
+    mgr.onTextDelta("oc_chat","短答案");
+    await mgr.settle("oc_chat");
 
     expect(cardkit.countOf("createCard")).toBe(1);
   });
@@ -301,8 +301,8 @@ describe("建卡失败降级", () => {
     expect(session.cardId).toBeNull();
     expect(fallback.sentCards).toHaveLength(1);
 
-    mgr.onTextDelta("降级后的答案");
-    await mgr.settle();
+    mgr.onTextDelta("oc_chat","降级后的答案");
+    await mgr.settle("oc_chat");
 
     // 内容必须以某种形式送达
     expect(deliveredText(cardkit, fallback)).toContain("降级后的答案");
@@ -314,8 +314,8 @@ describe("建卡失败降级", () => {
     const mgr = manager(cardkit, fallback);
 
     await mgr.start("oc_chat", "om_user");
-    mgr.onTextDelta("纯文本兜底内容");
-    await mgr.settle();
+    mgr.onTextDelta("oc_chat","纯文本兜底内容");
+    await mgr.settle("oc_chat");
 
     expect(fallback.messages).toHaveLength(1);
     expect(fallback.messages[0].text).toContain("纯文本兜底内容");
@@ -331,14 +331,14 @@ describe("建卡失败降级", () => {
     expect(session.staticCardMessageId).toBe("fallback_msg_1");
 
     // 流式期间的多次事件都不应触发卡片更新
-    mgr.onTextDelta("第一段");
-    mgr.onThinkingDelta("推理中");
-    mgr.onToolStart("t1", "bash", { cmd: "ls" });
-    mgr.onToolEnd("t1", "done", false);
-    mgr.onTextDelta("第二段");
+    mgr.onTextDelta("oc_chat","第一段");
+    mgr.onThinkingDelta("oc_chat","推理中");
+    mgr.onToolStart("oc_chat","t1", "bash", { cmd: "ls" });
+    mgr.onToolEnd("oc_chat","t1", "done", false);
+    mgr.onTextDelta("oc_chat","第二段");
     expect(fallback.patchedCards).toHaveLength(0);
 
-    await mgr.settle();
+    await mgr.settle("oc_chat");
 
     expect(fallback.patchedCards).toHaveLength(1);
     expect(fallback.patchedCards[0].messageId).toBe("fallback_msg_1");
@@ -361,8 +361,8 @@ describe("流式中途失败", () => {
     const mgr = manager(cardkit, fallback);
 
     const session = await mgr.start("oc_chat", "om_user");
-    mgr.onTextDelta("中断前的内容");
-    await mgr.settle();
+    mgr.onTextDelta("oc_chat","中断前的内容");
+    await mgr.settle("oc_chat");
 
     expect(session.degraded).toBe(true);
     expect(deliveredText(cardkit, fallback)).toContain("中断前的内容");
@@ -377,16 +377,16 @@ describe("流式中途失败", () => {
     const mgr = manager(cardkit, fallback);
 
     const session = await mgr.start("oc_chat", "om_user");
-    mgr.onTextDelta("触发降级");
+    mgr.onTextDelta("oc_chat","触发降级");
     // 首次 flush 触发降级
     await mgr["flushSession"](session);
     expect(session.degraded).toBe(true);
 
     const callsAfterDegrade = cardkit.calls.length;
-    mgr.onTextDelta("降级之后的增量");
-    mgr.onToolStart("t1", "bash", { cmd: "ls" });
-    mgr.onToolEnd("t1", "ok", false);
-    await mgr.settle();
+    mgr.onTextDelta("oc_chat","降级之后的增量");
+    mgr.onToolStart("oc_chat","t1", "bash", { cmd: "ls" });
+    mgr.onToolEnd("oc_chat","t1", "ok", false);
+    await mgr.settle("oc_chat");
 
     // 降级后只允许静态卡 / 纯文本，不应再有原生调用
     expect(cardkit.calls.length).toBe(callsAfterDegrade);
@@ -402,8 +402,8 @@ describe("流式中途失败", () => {
     const mgr = manager(cardkit, fallback);
 
     const session = await mgr.start("oc_chat", "om_user");
-    mgr.onTextDelta("需要保住的内容");
-    await mgr.settle();
+    mgr.onTextDelta("oc_chat","需要保住的内容");
+    await mgr.settle("oc_chat");
 
     // 应对已存在的原生卡消息 PATCH 一次终态静态卡
     expect(fallback.patchedCards).toHaveLength(1);
@@ -422,30 +422,31 @@ describe("终态与幂等性", () => {
     const mgr = manager(cardkit, fallback);
 
     await mgr.start("oc_chat", "om_user");
-    mgr.onTextDelta("部分内容");
-    const aborted = await mgr.abort("用户已停止当前任务");
+    mgr.onTextDelta("oc_chat","部分内容");
+    const aborted = await mgr.abort("oc_chat", "用户已停止当前任务");
     expect(aborted?.phase).toBe("aborted");
     expect(aborted?.terminalReason).toBe("user_abort");
 
     const settingsAfterAbort = cardkit.countOf("updateSettings");
     const messagesAfterAbort = fallback.messages.length;
 
-    await mgr.settle();
+    await mgr.settle("oc_chat");
 
     expect(cardkit.countOf("updateSettings")).toBe(settingsAfterAbort);
     expect(fallback.messages.length).toBe(messagesAfterAbort);
   });
 
-  it("terminate 标记 session_shutdown 终态", async () => {
+  it("terminateAll 标记 session_shutdown 终态并释放会话", async () => {
     const cardkit = new FakeCardKit();
     const fallback = new FakeFallback();
     const mgr = manager(cardkit, fallback);
 
-    await mgr.start("oc_chat", "om_user");
-    const session = await mgr.terminate("会话已关闭");
+    const session = await mgr.start("oc_chat", "om_user");
+    await mgr.terminateAll("会话已关闭");
 
-    expect(session?.phase).toBe("terminated");
-    expect(session?.terminalReason).toBe("session_shutdown");
+    expect(session.phase).toBe("terminated");
+    expect(session.terminalReason).toBe("session_shutdown");
+    expect(mgr.sessionFor("oc_chat")).toBeNull();
   });
 
   it("新请求到来时取代旧会话", async () => {
@@ -454,11 +455,11 @@ describe("终态与幂等性", () => {
     const mgr = manager(cardkit, fallback);
 
     const first = await mgr.start("oc_chat", "om_user_1");
-    mgr.onTextDelta("第一轮");
+    mgr.onTextDelta("oc_chat","第一轮");
     const second = await mgr.start("oc_chat", "om_user_2");
 
     expect(first.terminalReason).toBe("replaced");
     expect(second).not.toBe(first);
-    expect(mgr.activeSession).toBe(second);
+    expect(mgr.sessionFor("oc_chat")).toBe(second);
   });
 });

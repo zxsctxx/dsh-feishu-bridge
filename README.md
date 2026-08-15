@@ -13,7 +13,7 @@
 
 - **入站**：飞书消息 → 访问控制 → 斜杠命令/消息队列 → `createUserMessage` → `agent.followup()`
 - **出站**：监听 `session/event`：`assistant/chunk`（text/reasoning delta）、`tool/call`、`tool/result`、`assistant/message`、`turn/end` → 单卡流式刷新，`turn/end` 封卡
-- **会话**：**每个飞书 chat 一个独立的 dsh Agent**（含独立上下文、模型路由与工具状态；sessionId 由 chatId 确定性派生，重启后自动恢复各自会话）。处理调度全局串行：同一时刻只处理一个 chat 的消息，其余进入互斥队列等待，保证单活动会话的卡片状态一致
+- **会话**：**每个飞书 chat 一个独立的 dsh Agent**（含独立上下文、模型路由与工具状态；sessionId 由 chatId 确定性派生，重启后自动恢复各自会话）。**各 chat 并行处理、互不排队**；同一 chat 内的消息按队列串行处理（`sameChatBusyPolicy` 控制忙时策略）
 
 ## 主要能力
 

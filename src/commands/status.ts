@@ -23,7 +23,7 @@ export const statusCommand: CommandHandler = {
     if (warning) reply += `\n- ${warning}`;
 
     if (pending > 0) reply += `\n- 排队: ${pending} 条`;
-    else if (!ctx.manager.isIdle) reply += "\n- 状态: 处理中";
+    else if (!ctx.manager.isIdleFor(ctx.chatId)) reply += "\n- 状态: 处理中";
     else reply += "\n- 状态: 空闲";
 
     reply += `\n- 会话: ${status.sessionId?.slice(0, 8) ?? "未创建"}（${status.messageCount ?? 0} 条消息）`;

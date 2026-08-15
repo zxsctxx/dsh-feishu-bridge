@@ -78,22 +78,23 @@ export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void
   let client: FeishuClient | null = null;
   let streaming: StreamingCardManager | null = null;
   let clarify: ClarifyManager | null = null;
-  let latestChatId: string | null = null;
   const metrics = new MetricsCollector();
   const configReload = new ConfigReloadCoordinator();
   const queues = new MessageQueueManager({
-    isAgentIdle: () => manager.isIdle,
+    // per-chat 并行：每个 chat 按自己的 agent 空闲状态独立放行
+    isAgentIdle: (chatId: string) => manager.isIdleFor(chatId),
   });
-  /** 当前任务硬超时定时器（turn/end 时清理） */
-  let taskTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 各 chat 的任务硬超时定时器（turn/end 时清理） */
+  const taskTimeoutTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   // ── DSH 会话层 ──
-  const toolDeps = (): ToolDeps => ({
+  const toolDeps = (chatId: string): ToolDeps => ({
     get client() { return client; },
     get config() { return config; },
     get streaming() { return streaming; },
     get clarify() { return clarify; },
-    get latestChatId() { return latestChatId; },
+    // per-chat：工具默认发送目标绑定其所属 chat，而非全局"最近活跃"
+    get latestChatId() { return chatId; },
     downgradeHeadings,
   });
   const manager = new DshSessionManager(
@@ -101,14 +102,14 @@ export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void
     agents,
     config,
     logger,
-    (agentCtx) => registerBridgeTools(agentCtx, toolDeps()),
+    (agentCtx, chatId) => registerBridgeTools(agentCtx, toolDeps(chatId)),
   );
   const settleHooks: SettleHooks = {
     onSettled: async (chatId, phase) => {
       // 任务已终态：清除残留的任务超时定时器（P2-1：避免 900s 后误触发）
-      clearTaskTimeout();
+      clearTaskTimeout(chatId);
       queues.setProcessing(chatId, false);
-      streaming?.release();
+      streaming?.release(chatId);
       // turn/end emit 时 agent 可能尚未收敛为 idle；等待收敛后再放行队列，
       // 否则 flushAllQueues 会因 isAgentIdle=false 跳过且无独立触发器（P1-3）
       await waitAgentIdle(chatId);
@@ -121,23 +122,24 @@ export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void
 
   // ── 任务超时 ──
 
-  function clearTaskTimeout(): void {
-    if (taskTimeoutTimer) {
-      clearTimeout(taskTimeoutTimer);
-      taskTimeoutTimer = null;
+  function clearTaskTimeout(chatId: string): void {
+    const timer = taskTimeoutTimers.get(chatId);
+    if (timer) {
+      clearTimeout(timer);
+      taskTimeoutTimers.delete(chatId);
     }
   }
 
   function armTaskTimeout(chatId: string): void {
-    clearTaskTimeout();
+    clearTaskTimeout(chatId);
     const sec = config.taskTimeoutSec ?? 900;
-    taskTimeoutTimer = setTimeout(() => {
+    taskTimeoutTimers.set(chatId, setTimeout(() => {
       void (async () => {
         try {
           warn(`task timeout after ${sec}s chatId=${chatId}`);
           flashStatus("飞书: ⏰ 任务超时");
-          if (streaming?.activeSession?.chatId === chatId) {
-            await streaming.abort(`任务超时（${sec}s）`, "timeout");
+          if (streaming?.sessionFor(chatId)) {
+            await streaming.abort(chatId, `任务超时（${sec}s）`, "timeout");
           }
           manager.cancel(chatId);
           await client?.stopTyping(chatId, false).catch(() => {});
@@ -148,9 +150,10 @@ export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void
           warn(`task timeout handler failed: ${describeError(err)}`);
         }
       })();
-    }, sec * 1000);
-    if (typeof taskTimeoutTimer === "object" && taskTimeoutTimer && "unref" in taskTimeoutTimer) {
-      (taskTimeoutTimer as NodeJS.Timeout).unref?.();
+    }, sec * 1000));
+    const timer = taskTimeoutTimers.get(chatId);
+    if (timer && typeof timer === "object" && "unref" in timer) {
+      (timer as NodeJS.Timeout).unref?.();
     }
   }
 
@@ -313,14 +316,14 @@ export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void
       chatId,
       incoming,
       config.sameChatBusyPolicy ?? "queue",
-      streaming?.activeSession?.chatId === chatId,
+      streaming?.sessionFor(chatId) !== null,
     );
 
     if (outcome.action === "interrupted") {
-      clearTaskTimeout();
+      clearTaskTimeout(chatId);
       await clarify?.abort();
-      if (streaming?.activeSession?.chatId === chatId) {
-        await streaming.abort("被同会话新消息打断", "user_abort");
+      if (streaming?.sessionFor(chatId)) {
+        await streaming.abort(chatId, "被同会话新消息打断", "user_abort");
       }
       manager.cancel(chatId);
       client?.stopTyping(chatId, false).catch(() => {});
@@ -362,9 +365,7 @@ export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void
         }
       }
 
-      latestChatId = chatId;
-
-      // 添加 Typing Reaction 并创建单张流式卡片
+      // 添加 Typing Reaction 并创建本 chat 的流式卡片
       await client!.startTyping(chatId, item.msgId);
       await streaming?.start(chatId, item.msgId);
       armTaskTimeout(chatId);
@@ -374,7 +375,7 @@ export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void
       await manager.sendMessage(chatId, fullContent);
     } catch (err) {
       // 媒体下载或投递失败：告知用户而非静默丢弃，并释放队列
-      clearTaskTimeout();
+      clearTaskTimeout(chatId);
       queues.setProcessing(chatId, false);
       warn(`failed to dispatch message chatId=${chatId}: ${describeError(err)}`);
       client?.stopTyping(chatId, false).catch(() => {});
@@ -387,10 +388,9 @@ export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void
 
   /** 为 /new /resume 做前置清理：中断流式、清空本聊天队列、取消 Agent */
   async function prepareSessionControl(chatId: string): Promise<void> {
-    latestChatId = chatId;
-    clearTaskTimeout();
+    clearTaskTimeout(chatId);
     await clarify?.abort();
-    if (streaming?.activeSession) await streaming.abort("会话控制命令中断当前任务");
+    if (streaming?.sessionFor(chatId)) await streaming.abort(chatId, "会话控制命令中断当前任务");
     client?.stopTyping(chatId, false).catch(() => {});
     queues.reset(chatId);
     manager.cancel(chatId);
@@ -421,14 +421,13 @@ export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void
 
   function flushAllQueues(): void {
     if (!client || client.getStatus() !== "connected") return;
-    if (!manager.isIdle) return;
-    // 一次只放行一个 chat：共享 Agent 同时只能跑一个任务
-    const [chatId] = queues.chatsAwaitingFlush();
-    if (!chatId) return;
-    void dequeueAndProcess(chatId).catch((err) => {
-      queues.setProcessing(chatId, false);
-      warn(`flush failed chatId=${chatId}: ${describeError(err)}`);
-    });
+    // per-chat 并行：放行所有可处理的 chat（各 agent 独立判断空闲）
+    for (const chatId of queues.chatsAwaitingFlush()) {
+      void dequeueAndProcess(chatId).catch((err) => {
+        queues.setProcessing(chatId, false);
+        warn(`flush failed chatId=${chatId}: ${describeError(err)}`);
+      });
+    }
   }
 
   /** 等待指定 chat 的 agent 收敛到 idle；带超时防挂起 */
@@ -473,14 +472,13 @@ export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void
     }
 
     return async () => {
-      clearTaskTimeout();
+      for (const chatId of [...taskTimeoutTimers.keys()]) clearTaskTimeout(chatId);
       if (idleTimer) {
         clearInterval(idleTimer);
         idleTimer = null;
       }
       await clarify?.abort();
-      await streaming?.terminate("dsh-feishu-bridge 已卸载");
-      streaming?.release();
+      await streaming?.terminateAll("dsh-feishu-bridge 已卸载");
       if (client) {
         client.disconnect();
         client = null;

@@ -56,7 +56,8 @@ function resolveTarget(
   if (!deps.client || deps.client.getStatus() !== "connected") {
     return { error: "错误: 飞书 Bot 未连接。" };
   }
-  const chatId = explicitChatId || deps.streaming?.activeSession?.chatId || deps.latestChatId;
+  // 工具已绑定所属 chat（per-chat）：latestChatId 即该 chat，无需全局活跃会话
+  const chatId = explicitChatId || deps.latestChatId;
   if (!chatId) {
     return { error: "错误: 没有活跃的飞书聊天。请先在飞书中发送一条消息。" };
   }

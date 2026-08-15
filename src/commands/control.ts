@@ -6,11 +6,11 @@ export const stopCommand: CommandHandler = {
   name: "/stop",
   help: "中断当前任务并清空队列",
   async handle(ctx) {
-    ctx.clearTaskTimeout();
+    ctx.clearTaskTimeout(ctx.chatId);
     await ctx.clarify?.abort();
 
-    const streamingHere = ctx.streaming?.activeSession?.chatId === ctx.chatId;
-    if (streamingHere) await ctx.streaming!.abort("用户已停止当前任务");
+    const streamingHere = ctx.streaming?.sessionFor(ctx.chatId) !== null;
+    if (streamingHere) await ctx.streaming!.abort(ctx.chatId, "用户已停止当前任务");
 
     const clearedCount = ctx.queues.pendingFor(ctx.chatId);
     if (streamingHere) ctx.client?.stopTyping(ctx.chatId, false).catch(() => {});
@@ -28,7 +28,7 @@ export const queueCommand: CommandHandler = {
   name: "/queue",
   help: "查看队列状态",
   async handle(ctx) {
-    const active = ctx.streaming?.activeSession?.chatId === ctx.chatId;
+    const active = ctx.streaming?.sessionFor(ctx.chatId) !== null;
     const count = ctx.queues.pendingFor(ctx.chatId);
     if (!active && count === 0) return "队列为空，当前空闲。";
 

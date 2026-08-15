@@ -1,9 +1,8 @@
 /**
  * 每个聊天一条消息队列。
  *
- * 全局约束：一个 Pi 扩展实例只绑定一个 Pi session，因此同一时刻
- * 只允许一个 chat 处于 processing。跨 chat 的消息互相排队，
- * 由 `isAgentIdle` 回调判断 Pi 侧是否空闲。
+ * per-chat 并行：每个 chat 独立判断其 agent 是否空闲，互不阻塞。
+ * 同一 chat 内保持串行（排队），跨 chat 可同时处理。
  */
 
 import type { InboundResource } from "./types.js";
@@ -32,8 +31,8 @@ export type EnqueueOutcome =
   | { action: "interrupted"; dropped: number; agentBusy: boolean };
 
 export interface QueueHooks {
-  /** Pi 侧是否空闲；忙时不出队，等 agent_settled 再 flush */
-  isAgentIdle(): boolean;
+  /** 指定 chat 的 agent 是否空闲；忙时不出队，等 settled 再 flush */
+  isAgentIdle(chatId: string): boolean;
 }
 
 export class MessageQueueManager {
@@ -74,13 +73,6 @@ export class MessageQueueManager {
     return false;
   }
 
-  private otherChatProcessing(chatId: string): boolean {
-    for (const [id, queue] of this.queues) {
-      if (id !== chatId && queue.processing) return true;
-    }
-    return false;
-  }
-
   setProcessing(chatId: string, processing: boolean): void {
     this.queueFor(chatId).processing = processing;
   }
@@ -97,6 +89,7 @@ export class MessageQueueManager {
    *
    * `streamingSameChat` 表示该 chat 当前是否有活跃的流式卡片——
    * 卡片可能仍在收尾而队列已标记空闲，两者需一起判断是否「忙」。
+   * 仅判断本 chat：跨 chat 并行，互不排队。
    */
   enqueue(
     chatId: string,
@@ -105,21 +98,21 @@ export class MessageQueueManager {
     streamingSameChat: boolean,
   ): EnqueueOutcome {
     const queue = this.queueFor(chatId);
+    const agentBusy = !this.hooks.isAgentIdle(chatId);
     const sameChatBusy = queue.processing || streamingSameChat;
 
     if (sameChatBusy && policy === "interrupt") {
       const dropped = queue.queue.length;
       // 丢弃本 chat 全部排队，只保留最新一条
       queue.queue = [message];
-      const agentBusy = !this.hooks.isAgentIdle();
-      // agent 仍在跑时等 agent_settled 清 processing；否则调用方直接出队
+      // agent 仍在跑时等 settled 清 processing；否则调用方直接出队
       queue.processing = agentBusy;
       return { action: "interrupted", dropped, agentBusy };
     }
 
     queue.queue.push(message);
 
-    if (sameChatBusy || this.otherChatProcessing(chatId) || !this.hooks.isAgentIdle()) {
+    if (sameChatBusy || agentBusy) {
       return { action: "queued", pending: this.pendingCount() };
     }
     return { action: "process" };
@@ -128,8 +121,8 @@ export class MessageQueueManager {
   /**
    * 取出下一条待处理消息。
    *
-   * 返回 null 表示本次不应处理：队列为空、Pi 正忙、或另一个 chat 占用中。
-   * 三种情况都会把 processing 置回 false，等下一次 flush 重试。
+   * 返回 null 表示本次不应处理：队列为空或本 chat 的 agent 正忙。
+   * 两种情况都会把 processing 置回 false，等下一次 flush 重试。
    */
   dequeue(chatId: string): QueuedMessage | null {
     const queue = this.queues.get(chatId);
@@ -137,7 +130,7 @@ export class MessageQueueManager {
       if (queue) queue.processing = false;
       return null;
     }
-    if (!this.hooks.isAgentIdle() || this.otherChatProcessing(chatId)) {
+    if (!this.hooks.isAgentIdle(chatId)) {
       queue.processing = false;
       return null;
     }

@@ -38,8 +38,8 @@ export interface CommandContext {
   reloadConfig(): Promise<void>;
   /** 短暂在状态栏闪一条提示 */
   flashStatus(text: string): void;
-  /** 取消当前任务的硬超时 */
-  clearTaskTimeout(): void;
+  /** 取消指定 chat 当前任务的硬超时 */
+  clearTaskTimeout(chatId: string): void;
 }
 
 /**

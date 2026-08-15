@@ -79,27 +79,30 @@ export class DshEventAdapter {
     // 只处理本插件管理过的 agent 会话（含 /new、/model fork 后仍可能到达
     // 的旧会话 turn/end 封口事件）；宿主 Web GUI 等其他会话不受影响
     if (!this.manager.isOwnedSession(sessionId)) return;
-    this.logger.debug(`session/event ${event.type} seq=${event.seq}`);
+    // 事件定位所属 chat（per-chat 并行：卡片按 chat 更新）
+    const chatId = this.manager.chatIdForSession(sessionId);
+    if (!chatId) return;
+    this.logger.debug(`session/event ${event.type} seq=${event.seq} chat=${chatId}`);
 
     switch (event.type) {
       case "assistant/chunk": {
-        this.handleChunk(event);
+        this.handleChunk(chatId, event);
         break;
       }
       case "tool/call": {
-        this.handleToolCall(event);
+        this.handleToolCall(chatId, event);
         break;
       }
       case "tool/result": {
-        this.handleToolResult(event);
+        this.handleToolResult(chatId, event);
         break;
       }
       case "assistant/message": {
-        this.handleAssistantMessage(event);
+        this.handleAssistantMessage(chatId, event);
         break;
       }
       case "turn/end": {
-        void this.handleTurnEnd(event);
+        void this.handleTurnEnd(chatId, event);
         break;
       }
       default:
@@ -107,24 +110,24 @@ export class DshEventAdapter {
     }
   }
 
-  private handleChunk(event: SessionEvent): void {
+  private handleChunk(chatId: string, event: SessionEvent): void {
     if (event.type !== "assistant/chunk") return;
     const chunk = event.data.chunk;
     const streaming = this.streaming();
-    if (!streaming || !streaming.activeSession) return;
+    if (!streaming || !streaming.sessionFor(chatId)) return;
 
     switch (chunk.type) {
       case "text-delta":
-        streaming.onTextDelta(chunk.text);
+        streaming.onTextDelta(chatId, chunk.text);
         break;
       case "reasoning-delta":
         // 总是转发：轮次计数/面板标题与 showThinking 无关；正文显隐由渲染层控制
-        streaming.onThinkingDelta(chunk.text);
+        streaming.onThinkingDelta(chatId, chunk.text);
         break;
       case "finish": {
         const reason = chunk.reason;
         if (reason && typeof reason === "object" && "kind" in reason) {
-          const session = streaming.activeSession;
+          const session = streaming.sessionFor(chatId);
           if (session) session.footer.stopReason = String((reason as { kind: unknown }).kind);
         }
         break;
@@ -134,27 +137,27 @@ export class DshEventAdapter {
     }
   }
 
-  private handleToolCall(event: SessionEvent): void {
+  private handleToolCall(chatId: string, event: SessionEvent): void {
     if (event.type !== "tool/call") return;
     const streaming = this.streaming();
     if (!streaming) return;
     const { callId, name, arguments: rawArgs } = event.data;
-    streaming.onToolStart(callId, name, safeParseArguments(rawArgs));
+    streaming.onToolStart(chatId, callId, name, safeParseArguments(rawArgs));
   }
 
-  private handleToolResult(event: SessionEvent): void {
+  private handleToolResult(chatId: string, event: SessionEvent): void {
     if (event.type !== "tool/result") return;
     const streaming = this.streaming();
     if (!streaming) return;
     const { message, error } = event.data;
     const text = extractBlocksText(message?.content);
-    streaming.onToolEnd(message.source.callId, text || (error ? "工具执行失败" : "(空结果)"), !!error);
+    streaming.onToolEnd(chatId, message.source.callId, text || (error ? "工具执行失败" : "(空结果)"), !!error);
   }
 
-  private handleAssistantMessage(event: SessionEvent): void {
+  private handleAssistantMessage(chatId: string, event: SessionEvent): void {
     if (event.type !== "assistant/message") return;
     const streaming = this.streaming();
-    const session = streaming?.activeSession;
+    const session = streaming?.sessionFor(chatId);
     if (!session) return;
     const message = event.data.message;
     if (message?.source?.model) {
@@ -165,7 +168,7 @@ export class DshEventAdapter {
     }
   }
 
-  private async handleTurnEnd(event: SessionEvent): Promise<void> {
+  private async handleTurnEnd(chatId: string, event: SessionEvent): Promise<void> {
     if (event.type !== "turn/end") return;
     const reason = event.data.reason;
     const streaming = this.streaming();
@@ -173,8 +176,8 @@ export class DshEventAdapter {
     if (reason.kind === "error") {
       // 打印完整错误对象：reason.error 常为 LlmError.failure，可能无 message 字段
       this.logger.error(`turn/end error: ${JSON.stringify(reason.error)}`);
-      streaming?.recordError(reason.error.message ?? "LLM 调用失败");
-      await this.settle("llm_error");
+      streaming?.recordError(chatId, reason.error.message ?? "LLM 调用失败");
+      await this.settle(chatId, "llm_error");
       return;
     }
 
@@ -182,22 +185,22 @@ export class DshEventAdapter {
       // 无论卡片是否已被命令层先行封卡，统一走 settle()：
       // terminal 卡片 finalize 幂等，非 terminal 卡片先封卡再 settle，
       // 保证 onSettled 一定执行（否则处理中 chat 的队列会悬挂）
-      const active = streaming?.activeSession;
+      const active = streaming?.sessionFor(chatId);
       if (active && !active.terminal) {
-        await streaming?.abort("任务已中断", "user_abort");
+        await streaming?.abort(chatId, "任务已中断", "user_abort");
       }
-      await this.settle();
+      await this.settle(chatId);
       return;
     }
 
-    await this.settle();
+    await this.settle(chatId);
   }
 
   /** 封卡：footer 全量累计 → settle → 释放队列 */
-  private async settle(errorKind?: "llm_error"): Promise<void> {
+  private async settle(chatId: string, errorKind?: "llm_error"): Promise<void> {
     const streaming = this.streaming();
-    const session = streaming?.activeSession;
-    if (!session) return;
+    const session = streaming?.sessionFor(chatId);
+    if (!session || !streaming) return;
 
     // events 已随 session/event 提交落盘，settle 时全量累计即可（无需 pending）
     const usage = this.manager.getTokenUsage(session.chatId);
@@ -219,8 +222,8 @@ export class DshEventAdapter {
 
     try {
       const settled = errorKind === "llm_error"
-        ? await streaming.abort("LLM 调用失败", "llm_error")
-        : await streaming.settle();
+        ? await streaming.abort(chatId, "LLM 调用失败", "llm_error")
+        : await streaming.settle(chatId);
       if (!settled) return;
       await this.client()?.stopTyping(settled.chatId, settled.phase === "completed");
       // release 由 onSettled 负责：settle() 的 await 让出事件循环后
@@ -229,11 +232,11 @@ export class DshEventAdapter {
       await this.hooks.onSettled(settled.chatId, settled.phase);
     } catch (err) {
       warn(`settle failed: ${err instanceof Error ? err.message : String(err)}`);
-      this.queues.setProcessing(session.chatId, false);
+      this.queues.setProcessing(chatId, false);
       // 仅当卡片仍是本会话的才释放，避免误清新卡片
       const current = this.streaming();
-      if (current?.activeSession === session) {
-        current.release();
+      if (current?.sessionFor(chatId) === session) {
+        current.release(chatId);
       }
     }
   }

@@ -68,8 +68,8 @@ export class DshSessionManager {
     },
     private readonly config: BridgeConfig,
     private readonly logger: Logger,
-    /** 创建/恢复 agent 时的额外 scoped setup（注册飞书工具等） */
-    private readonly setupExtra: (agentCtx: Context) => void = () => {},
+    /** 创建/恢复 agent 时的额外 scoped setup（注册飞书工具等；chatId 为该 agent 所属会话） */
+    private readonly setupExtra: (agentCtx: Context, chatId: string) => void = () => {},
   ) {
     this.modelResolver = new ModelResolver(ctx, config, logger);
   }
@@ -98,6 +98,18 @@ export class DshSessionManager {
   /** 指定 chat 的活跃 agent 记录（可能为 null） */
   recordFor(chatId: string): SessionRecord | null {
     return this.records.get(this.sessionKeyFor(chatId)) ?? null;
+  }
+
+  /** sessionId → chatId 反查（事件流定位所属 chat 用） */
+  chatIdForSession(sessionId: SessionId): string | undefined {
+    const prefix = `feishu:${this.config.appId}:`;
+    for (const [key, record] of this.records) {
+      if (record.sessionId === sessionId) {
+        const chatId = key.slice(prefix.length);
+        return chatId || undefined;
+      }
+    }
+    return undefined;
   }
 
   /** 全局空闲：没有任何 chat 的 agent 在运行（互斥调度依据） */
@@ -229,20 +241,20 @@ export class DshSessionManager {
     }
   }
 
-  /** 组装 setup：preset 挂载 + 插件自带的 scoped 贡献（飞书工具） */
-  private combinedSetup(composed: PresetComposition): AgentSetup | undefined {
+  /** 组装 setup：preset 挂载 + 插件自带的 scoped 贡献（飞书工具，绑定 chatId） */
+  private combinedSetup(composed: PresetComposition, chatId: string): AgentSetup | undefined {
     const { setup } = composed;
     const withTools = this.config.registerBridgeTools;
 
     if (withTools && setup) {
       return async (agentCtx: Context) => {
         await setup(agentCtx);
-        this.setupExtra(agentCtx);
+        this.setupExtra(agentCtx, chatId);
       };
     }
     if (withTools) {
       return (agentCtx: Context) => {
-        this.setupExtra(agentCtx);
+        this.setupExtra(agentCtx, chatId);
       };
     }
     return setup;
@@ -274,7 +286,7 @@ export class DshSessionManager {
         const composed = await this.composePreset(this.config.preset);
         agentPreset = composed.agentPreset;
         const resumeRoute = this.modelResolver.getResumeRoute(key);
-        const setup = this.combinedSetup(composed);
+        const setup = this.combinedSetup(composed, chatId);
         const resumed = await this.agents.resume({
           resumeSessionId: sessionId,
           ...(resumeRoute ? { agentOptions: resumeRoute } : {}),
@@ -288,7 +300,7 @@ export class DshSessionManager {
         this.logger.warn(`resume failed, creating new: key=${key} err=${err instanceof Error ? err.message : String(err)}`);
         const composed = await this.composePreset(this.config.preset);
         agentPreset = composed.agentPreset;
-        const setup = this.combinedSetup(composed);
+        const setup = this.combinedSetup(composed, chatId);
         const created = await this.agents.create({
           sessionId,
           meta: {
@@ -355,7 +367,7 @@ export class DshSessionManager {
     const target = SessionId(sessionId);
     try {
       const composed = await this.composePreset(this.config.preset);
-      const setup = this.combinedSetup(composed);
+      const setup = this.combinedSetup(composed, chatId);
       const resumed = await this.agents.resume({
         resumeSessionId: target,
         ...(setup ? { setup } : {}),
@@ -407,7 +419,7 @@ export class DshSessionManager {
 
     const childId = SessionId(randomUUID());
     const composed = await this.composePreset(this.config.preset);
-    const setup = this.combinedSetup(composed);
+    const setup = this.combinedSetup(composed, chatId);
     const created = await this.agents.create({
       sessionId: childId,
       seed,

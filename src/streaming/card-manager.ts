@@ -15,17 +15,23 @@ export interface StaticFallback {
 }
 
 export class StreamingCardManager {
-  private active: CardSession | null = null;
+  /** chatId → 活动卡片会话（per-chat 并行，各 chat 独立卡片） */
+  private sessions = new Map<string, CardSession>();
   constructor(private readonly cardkit: CardKitOperations, private readonly fallback: StaticFallback, private readonly options: StreamingManagerOptions, private readonly metrics?: MetricsCollector) {}
-  get activeSession(): CardSession | null { return this.active; }
+  /** 指定 chat 的卡片会话（可能为 null） */
+  sessionFor(chatId: string): CardSession | null { return this.sessions.get(chatId) ?? null; }
+  /** 活动会话数（metrics 用） */
+  get activeCount(): number { return this.sessions.size; }
 
   async start(chatId: string, userMsgId: string): Promise<CardSession> {
-    if (this.active && !this.active.terminal) await this.abort("被新请求取代", "replaced");
+    const prev = this.sessions.get(chatId);
+    if (prev && !prev.terminal) await this.abort(chatId, "被新请求取代", "replaced");
     const session = new CardSession(`${Date.now()}-${userMsgId}`, chatId, userMsgId, this.options.flushIntervalMs, {
       detailChars: this.options.maxToolDetailChars,
       outputChars: this.options.maxToolOutputChars,
-    }); this.active = session;
-    this.metrics?.setActive(1);
+    });
+    this.sessions.set(chatId, session);
+    this.metrics?.setActive(this.sessions.size);
     try {
       await this.bootstrapCardKit(session);
     } catch (error) {
@@ -78,37 +84,37 @@ export class StreamingCardManager {
   }
 
   private accepts(s: CardSession): boolean { return !s.terminal; }
-  onTextDelta(delta: string): void { const s = this.active; if (!s || !this.accepts(s)) return; s.appendText(delta); this.schedule(s); }
-  onThinkingDelta(delta: string): void {
-    const s = this.active; if (!s || !this.accepts(s)) return;
+  onTextDelta(chatId: string, delta: string): void { const s = this.sessions.get(chatId); if (!s || !this.accepts(s)) return; s.appendText(delta); this.schedule(s); }
+  onThinkingDelta(chatId: string, delta: string): void {
+    const s = this.sessions.get(chatId); if (!s || !this.accepts(s)) return;
     const startedRound = !s.currentThinking;
     s.appendThinking(delta);
     // 新一轮推理开始时立刻刷新标题轮次；流式中仍走节流
     if (startedRound) this.flushImmediate(s);
     else this.schedule(s);
   }
-  onToolStart(id: string, name: string, args: unknown): void {
-    const s = this.active; if (!s || !this.accepts(s)) return;
+  onToolStart(chatId: string, id: string, name: string, args: unknown): void {
+    const s = this.sessions.get(chatId); if (!s || !this.accepts(s)) return;
     s.recordTool(id); s.tools.start(id, name, args); s.markLoopActivity(); s.panelDirty = true; this.flushImmediate(s);
   }
-  onToolUpdate(id: string, result: unknown): void {
-    const s = this.active; if (!s || !this.accepts(s)) return;
+  onToolUpdate(chatId: string, id: string, result: unknown): void {
+    const s = this.sessions.get(chatId); if (!s || !this.accepts(s)) return;
     if (s.tools.update(id, result)) s.recordTool(id);
     s.markLoopActivity(); s.panelDirty = true; this.schedule(s);
   }
-  onToolEnd(id: string, result: unknown, error: boolean): void {
-    const s = this.active; if (!s || !this.accepts(s)) return;
+  onToolEnd(chatId: string, id: string, result: unknown, error: boolean): void {
+    const s = this.sessions.get(chatId); if (!s || !this.accepts(s)) return;
     if (s.tools.end(id, result, error)) s.recordTool(id);
     s.markLoopActivity(); s.panelDirty = true; this.flushImmediate(s);
   }
-  recordError(message: string): void { const s = this.active; if (!s || !this.accepts(s)) return; s.errorMessage = message; }
-  onAgentEnd(): void {
-    const s = this.active; if (!s || !this.accepts(s)) return;
+  recordError(chatId: string, message: string): void { const s = this.sessions.get(chatId); if (!s || !this.accepts(s)) return; s.errorMessage = message; }
+  onAgentEnd(chatId: string): void {
+    const s = this.sessions.get(chatId); if (!s || !this.accepts(s)) return;
     s.finishThinking(); s.panelDirty = true; this.flushImmediate(s);
   }
 
-  async settle(): Promise<CardSession | null> {
-    const s = this.active; if (!s) return null; s.finishThinking();
+  async settle(chatId: string): Promise<CardSession | null> {
+    const s = this.sessions.get(chatId); if (!s) return null; s.finishThinking();
     if (s.terminal) { await this.finalize(s); return s; }
     s.transition("completing");
     await s.flush.flushNow(() => this.flushSession(s)); await s.updates.drain();
@@ -116,19 +122,33 @@ export class StreamingCardManager {
     await this.finalize(s); return s;
   }
 
-  async abort(message = "用户已停止当前任务", reason: TerminalReason = "user_abort"): Promise<CardSession | null> {
-    const s = this.active; if (!s || s.terminal) return s;
+  async abort(chatId: string, message = "用户已停止当前任务", reason: TerminalReason = "user_abort"): Promise<CardSession | null> {
+    const s = this.sessions.get(chatId);
+    if (!s || s.terminal) return s ?? null;
     s.errorMessage = message; s.finishThinking();
     s.transition("aborted", reason, "abort");
     s.flush.complete(); await s.updates.drain(); await this.finalize(s); return s;
   }
-  async terminate(message = "会话已关闭"): Promise<CardSession | null> {
-    const s = this.active; if (!s || s.terminal) return s;
-    s.errorMessage = message;
-    s.transition("terminated", "session_shutdown", "session_shutdown");
-    s.flush.complete(); await s.updates.drain(); await this.finalize(s); return s;
+
+  /** 终止全部活动会话（插件卸载用） */
+  async terminateAll(message = "会话已关闭"): Promise<void> {
+    for (const [chatId, s] of [...this.sessions]) {
+      if (s.terminal) continue;
+      s.errorMessage = message;
+      s.transition("terminated", "session_shutdown", "session_shutdown");
+      s.flush.complete();
+      await s.updates.drain();
+      await this.finalize(s);
+      this.sessions.delete(chatId);
+    }
+    this.metrics?.setActive(0);
   }
-  release(): void { this.active = null; }
+
+  /** 释放指定 chat 的卡片会话（settle 完成后由 onSettled 调用） */
+  release(chatId: string): void {
+    this.sessions.delete(chatId);
+    this.metrics?.setActive(this.sessions.size);
+  }
   private schedule(s: CardSession): void { s.flush.schedule(() => this.flushSession(s)); }
   /** 关键事件（新轮推理 / 工具开始结束）立即刷新，避免标题卡住 */
   private flushImmediate(s: CardSession): void { void s.flush.flushNow(() => this.flushSession(s)); }
@@ -161,7 +181,6 @@ export class StreamingCardManager {
     }
     if (s.degraded || !s.cardId) {
       await this.deliverDegraded(s);
-      this.metrics?.setActive(0);
       return;
     }
     try {
@@ -196,11 +215,9 @@ export class StreamingCardManager {
       await s.updates.enqueue(() => this.cardkit.updateSettings(s.cardId!, { streaming_mode: false, summary: { content: (s.answer || s.errorMessage || "处理结束").slice(0, 120) } }, s.nextSequence()));
       await s.updates.drain();
       this.metrics?.recordFinalize();
-      this.metrics?.setActive(0);
     } catch (error) {
       this.degrade(s, error);
       await this.deliverDegraded(s);
-      this.metrics?.setActive(0);
     }
   }
 

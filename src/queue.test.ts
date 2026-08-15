@@ -5,7 +5,7 @@ function msg(msgId: string, text = "hi"): QueuedMessage {
   return { msgId, text, resources: [], chatType: "p2p" };
 }
 
-/** idle 可变，模拟 Pi 侧忙闲切换 */
+/** idle 可变，模拟 agent 侧忙闲切换；按 chat 独立判断 */
 function manager(idle = true) {
   const state = { idle };
   const queues = new MessageQueueManager({ isAgentIdle: () => state.idle });
@@ -124,35 +124,37 @@ describe("interrupt 策略", () => {
   });
 });
 
-describe("跨 chat 互斥", () => {
-  it("另一个 chat 处理中时排队", () => {
+describe("跨 chat 并行", () => {
+  it("另一个 chat 处理中不影响本 chat 入队", () => {
     const { queues } = manager();
     queues.enqueue("oc_a", msg("m1"), "queue", false);
     queues.dequeue("oc_a");
 
-    expect(queues.enqueue("oc_b", msg("m2"), "queue", false).action).toBe("queued");
+    // oc_a 处理中，oc_b 直接进入处理而非排队
+    expect(queues.enqueue("oc_b", msg("m2"), "queue", false).action).toBe("process");
   });
 
-  it("另一个 chat 处理中时 dequeue 拒绝出队", () => {
+  it("另一个 chat 处理中 dequeue 照常出队", () => {
     const { queues } = manager();
     queues.enqueue("oc_a", msg("m1"), "queue", false);
     queues.dequeue("oc_a");
     queues.enqueue("oc_b", msg("m2"), "queue", false);
 
-    expect(queues.dequeue("oc_b")).toBeNull();
-    expect(queues.isProcessing("oc_b")).toBe(false);
-    // 消息仍在队列里，等 flush 重试
-    expect(queues.pendingFor("oc_b")).toBe(1);
-  });
-
-  it("前一个 chat 释放后可以接着处理", () => {
-    const { queues } = manager();
-    queues.enqueue("oc_a", msg("m1"), "queue", false);
-    queues.dequeue("oc_a");
-    queues.enqueue("oc_b", msg("m2"), "queue", false);
-
-    queues.setProcessing("oc_a", false);
     expect(queues.dequeue("oc_b")?.msgId).toBe("m2");
+    expect(queues.isProcessing("oc_b")).toBe(true);
+  });
+
+  it("各 chat 的 agent 忙闲独立判断（agent 忙仍按 chat 判定）", () => {
+    // oc_a 的 agent 忙，oc_b 的 agent 空闲：两队列互不阻塞
+    const busy = new Set<string>(["oc_a"]);
+    const queues = new MessageQueueManager({ isAgentIdle: (chatId) => !busy.has(chatId) });
+    queues.enqueue("oc_a", msg("m1"), "queue", false);
+    queues.enqueue("oc_b", msg("m2"), "queue", false);
+
+    expect(queues.dequeue("oc_b")?.msgId).toBe("m2");
+    // oc_a 忙 → 出队被拒，消息保留
+    expect(queues.dequeue("oc_a")).toBeNull();
+    expect(queues.pendingFor("oc_a")).toBe(1);
   });
 
   it("pendingCount 汇总全部 chat", () => {
