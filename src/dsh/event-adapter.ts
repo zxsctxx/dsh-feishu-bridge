@@ -200,20 +200,20 @@ export class DshEventAdapter {
     if (!session) return;
 
     // events 已随 session/event 提交落盘，settle 时全量累计即可（无需 pending）
-    const usage = this.manager.getTokenUsage();
+    const usage = this.manager.getTokenUsage(session.chatId);
     session.footer.inputTokens = usage.input;
     session.footer.outputTokens = usage.output;
     session.footer.cacheRead = usage.cacheRead;
     session.footer.cacheWrite = usage.cacheWrite;
     // 上下文 = 最近一次请求 inputTokens / 模型广告窗口（request/context 路由元数据）
-    const latest = this.manager.getLatestRequestStats();
+    const latest = this.manager.getLatestRequestStats(session.chatId);
     session.footer.contextTokens = latest.inputTokens || null;
     session.footer.contextWindow = latest.contextWindow;
     session.footer.contextPercent = latest.contextWindow
       ? (latest.inputTokens / latest.contextWindow) * 100
       : null;
     // 流式质量指标（首 token 平均延迟 / 输出速率）
-    const metrics = this.manager.getStreamMetrics();
+    const metrics = this.manager.getStreamMetrics(session.chatId);
     session.footer.ttftAvgMs = metrics.ttftAvgMs;
     session.footer.outputSpeedTps = metrics.outputSpeedTps;
 

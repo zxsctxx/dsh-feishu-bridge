@@ -1,12 +1,13 @@
 /**
  * DshSessionManager — 飞书 → dsh Agent 的会话生命周期管理
  *
- * 会话模型（对齐 pi-feishu-bridge 的安全边界哲学）：
- *   一个插件实例 = 一个共享的 dsh Agent 上下文（由 preset/cwd 决定），
- *   多个飞书 chat 通过互斥队列共享该 Agent（见 MessageQueueManager）。
- *   真正多租户请分别启动 DSH profile。
+ * 会话模型（对齐 dsh-qqbot 的 per-peer 隔离语义）：
+ *   每个飞书 chat 拥有独立的 dsh Agent（独立上下文/模型/工具状态），
+ *   sessionKey 由 chatId 派生，重启后按 prefs 记录恢复各自会话。
+ *   处理调度仍全局串行（MessageQueueManager 互斥），同一时刻只处理
+ *   一个 chat——卡片系统按单活动会话设计，多 chat 并发需另行改造。
  *
- * sessionKey 格式: `feishu:${appId}:shared`（单一共享 agent）
+ * sessionKey 格式: `feishu:${appId}:${chatId}`
  * SessionId 由 sessionKey 确定性派生（SHA-256），/new 或切换模型后
  * 记录最新 sessionId 到 PrefsStore，重启后按记录恢复。
  *
@@ -41,7 +42,8 @@ interface SessionsService {
 }
 
 export class DshSessionManager {
-  private record: SessionRecord | null = null;
+  /** chat 会话记录表：sessionKey → SessionRecord（per-chat 隔离） */
+  private readonly records = new Map<string, SessionRecord>();
   private readonly modelResolver: ModelResolver;
   /** 本插件管理过的 sessionId 集合：/new、/model fork 后旧会话的
    *  turn/end（封口事件）仍会到达，adapter 据此决定是否处理 */
@@ -72,14 +74,15 @@ export class DshSessionManager {
     this.modelResolver = new ModelResolver(ctx, config, logger);
   }
 
-  /** 共享会话 key（单一 agent 模型） */
-  get sessionKey(): string {
-    return `feishu:${this.config.appId}:shared`;
+  /** chat 对应的会话 key（per-chat 隔离） */
+  sessionKeyFor(chatId: string): string {
+    return `feishu:${this.config.appId}:${chatId}`;
   }
 
-  /** 当前（或应恢复的）sessionId */
-  get sessionId(): SessionId {
-    return SessionId(this.modelResolver.getSessionId(this.sessionKey) ?? this.deriveSessionId(this.sessionKey));
+  /** 指定 chat 当前（或应恢复的）sessionId */
+  sessionIdFor(chatId: string): SessionId {
+    const key = this.sessionKeyFor(chatId);
+    return SessionId(this.modelResolver.getSessionId(key) ?? this.deriveSessionId(key));
   }
 
   /** 该 sessionId 是否属于本插件管理过的会话（adapter 过滤用） */
@@ -92,14 +95,23 @@ export class DshSessionManager {
     this.ownedSessionIds.add(sessionId);
   }
 
-  /** 当前活跃 agent 记录（可能为 null） */
-  get current(): SessionRecord | null {
-    return this.record;
+  /** 指定 chat 的活跃 agent 记录（可能为 null） */
+  recordFor(chatId: string): SessionRecord | null {
+    return this.records.get(this.sessionKeyFor(chatId)) ?? null;
   }
 
-  /** Agent 是否空闲（队列 flush 依据） */
+  /** 全局空闲：没有任何 chat 的 agent 在运行（互斥调度依据） */
   get isIdle(): boolean {
-    return !this.record || this.record.agent.status === "idle";
+    for (const record of this.records.values()) {
+      if (record.agent.status !== "idle") return false;
+    }
+    return true;
+  }
+
+  /** 指定 chat 的 agent 是否空闲 */
+  isIdleFor(chatId: string): boolean {
+    const record = this.recordFor(chatId);
+    return !record || record.agent.status === "idle";
   }
 
   /** 派生确定性 sessionId：同一个 key 重启后可恢复同一会话 */
@@ -110,13 +122,13 @@ export class DshSessionManager {
 
   // ── 模型相关（委托 ModelResolver） ──
 
-  getEffectiveModel(): ModelRoute | undefined {
-    return this.modelResolver.getEffectiveRoute(this.sessionKey);
+  getEffectiveModel(chatId: string): ModelRoute | undefined {
+    return this.modelResolver.getEffectiveRoute(this.sessionKeyFor(chatId));
   }
 
-  getStatus(): SessionStatus {
-    const record = this.record;
-    const route = this.getEffectiveModel();
+  getStatus(chatId: string): SessionStatus {
+    const record = this.recordFor(chatId);
+    const route = this.getEffectiveModel(chatId);
     return {
       active: !!record,
       sessionId: record?.sessionId,
@@ -127,9 +139,9 @@ export class DshSessionManager {
     };
   }
 
-  getTokenUsage(): TokenUsageStats {
+  getTokenUsage(chatId: string): TokenUsageStats {
     const stats: TokenUsageStats = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-    const events = this.record?.agent.session.events;
+    const events = this.recordFor(chatId)?.agent.session.events;
     if (!events) return stats;
 
     for (const event of events) {
@@ -144,8 +156,8 @@ export class DshSessionManager {
   }
 
   /** footer「上下文」口径：最近一次模型请求的 inputTokens + 模型广告的上下文窗口 */
-  getLatestRequestStats(): { inputTokens: number; contextWindow?: number } {
-    const record = this.record;
+  getLatestRequestStats(chatId: string): { inputTokens: number; contextWindow?: number } {
+    const record = this.recordFor(chatId);
     let inputTokens = 0;
     const events = record?.agent.session.events;
     if (events) {
@@ -162,12 +174,12 @@ export class DshSessionManager {
   }
 
   /** footer 流式指标：最后一场 turn 的首 token 平均延迟与最近一步输出速率 */
-  getStreamMetrics(): { ttftAvgMs: number | null; outputSpeedTps: number | null } {
-    return streamMetricsFromEvents(this.record?.agent.session.events ?? []);
+  getStreamMetrics(chatId: string): { ttftAvgMs: number | null; outputSpeedTps: number | null } {
+    return streamMetricsFromEvents(this.recordFor(chatId)?.agent.session.events ?? []);
   }
 
-  exportMarkdown(): string {
-    const record = this.record;
+  exportMarkdown(chatId: string): string {
+    const record = this.recordFor(chatId);
     if (!record) return "";
 
     const events = record.agent.session.events;
@@ -236,17 +248,18 @@ export class DshSessionManager {
     return setup;
   }
 
-  /** 获取或恢复或创建共享 agent（live → resume → create） */
-  async ensureAgent(): Promise<SessionRecord> {
-    if (this.record) {
-      this.record.lastActivity = Date.now();
-      return this.record;
+  /** 获取或恢复或创建 chat 的 agent（live → resume → create） */
+  async ensureAgent(chatId: string): Promise<SessionRecord> {
+    const key = this.sessionKeyFor(chatId);
+    const existing = this.records.get(key);
+    if (existing) {
+      existing.lastActivity = Date.now();
+      return existing;
     }
 
-    const key = this.sessionKey;
     const route = this.modelResolver.getEffectiveRoute(key);
-    const sessionId = this.sessionId;
-    this.logger.info(`ensureAgent: key=${key} route=${route ? `${route.provider}/${route.model}` : "host-default"} sessionId=${sessionId}`);
+    const sessionId = this.sessionIdFor(chatId);
+    this.logger.info(`ensureAgent: chat=${chatId} key=${key} route=${route ? `${route.provider}/${route.model}` : "host-default"} sessionId=${sessionId}`);
 
     let agent: Agent;
     let handle: AgentHandle | undefined;
@@ -302,13 +315,13 @@ export class DshSessionManager {
       agentPreset,
     };
 
-    this.record = record;
+    this.records.set(key, record);
     return record;
   }
 
   /** 发送用户消息（入站核心：构建 UserMessage → followup） */
-  async sendMessage(text: string): Promise<void> {
-    const record = await this.ensureAgent();
+  async sendMessage(chatId: string, text: string): Promise<void> {
+    const record = await this.ensureAgent(chatId);
     const content: ContentBlock[] = [{ type: "text" as const, text }];
     const message = createUserMessage({
       content,
@@ -316,27 +329,29 @@ export class DshSessionManager {
     });
     record.agent.followup(message);
     record.lastActivity = Date.now();
-    this.logger.info(`→ followup sent: key=${this.sessionKey} text="${text.slice(0, 200)}"`);
+    this.logger.info(`→ followup sent: chat=${chatId} text="${text.slice(0, 200)}"`);
   }
 
-  /** 取消当前任务（/stop、打断、超时） */
-  cancel(): void {
-    if (this.record) this.record.agent.cancel({ kind: "user" });
+  /** 取消指定 chat 的当前任务（/stop、打断、超时） */
+  cancel(chatId: string): void {
+    this.recordFor(chatId)?.agent.cancel({ kind: "user" });
   }
 
-  /** /new：释放当前 agent，改用全新 sessionId（历史仍持久化，可 /resume 恢复） */
-  async reset(): Promise<SessionId> {
-    await this.disposeRecord();
+  /** /new：释放 chat 的 agent，改用全新 sessionId（历史仍持久化，可 /resume 恢复） */
+  async reset(chatId: string): Promise<SessionId> {
+    const key = this.sessionKeyFor(chatId);
+    await this.disposeRecordFor(key);
     const newId = SessionId(randomUUID());
     this.registerSession(newId);
-    this.modelResolver.setSessionId(this.sessionKey, newId);
-    this.logger.info(`session reset: key=${this.sessionKey} → ${newId}`);
+    this.modelResolver.setSessionId(key, newId);
+    this.logger.info(`session reset: chat=${chatId} key=${key} → ${newId}`);
     return newId;
   }
 
-  /** /resume <sessionId>：释放当前 agent，恢复指定持久化会话 */
-  async resumeSession(sessionId: string): Promise<boolean> {
-    await this.disposeRecord();
+  /** /resume <sessionId>：释放 chat 当前 agent，恢复指定持久化会话到该 chat */
+  async resumeSession(chatId: string, sessionId: string): Promise<boolean> {
+    const key = this.sessionKeyFor(chatId);
+    await this.disposeRecordFor(key);
     const target = SessionId(sessionId);
     try {
       const composed = await this.composePreset(this.config.preset);
@@ -346,38 +361,38 @@ export class DshSessionManager {
         ...(setup ? { setup } : {}),
       });
       this.registerSession(target);
-      this.record = {
-        sessionKey: this.sessionKey,
+      this.records.set(key, {
+        sessionKey: key,
         sessionId: target,
         agent: resumed.agent,
         handle: resumed,
         lastActivity: Date.now(),
         agentPreset: composed.agentPreset,
-      };
-      this.modelResolver.setSessionId(this.sessionKey, sessionId);
-      this.logger.info(`session resumed: key=${this.sessionKey} sessionId=${sessionId}`);
+      });
+      this.modelResolver.setSessionId(key, sessionId);
+      this.logger.info(`session resumed: chat=${chatId} key=${key} sessionId=${sessionId}`);
       return true;
     } catch (err) {
-      this.logger.error(`resume failed: sessionId=${sessionId} err=${err instanceof Error ? err.message : String(err)}`);
+      this.logger.error(`resume failed: chat=${chatId} sessionId=${sessionId} err=${err instanceof Error ? err.message : String(err)}`);
       return false;
     }
   }
 
-  /** 切换模型：fork 当前会话 → 以新模型创建子会话（对齐 dsh-qqbot setModelOverride） */
-  async setModelOverride(route: ModelRoute): Promise<void> {
-    const key = this.sessionKey;
+  /** 切换模型：fork chat 当前会话 → 以新模型创建子会话（对齐 dsh-qqbot setModelOverride） */
+  async setModelOverride(chatId: string, route: ModelRoute): Promise<void> {
+    const key = this.sessionKeyFor(chatId);
     this.modelResolver.setOverride(key, route);
 
-    const record = this.record;
+    const record = this.records.get(key);
     if (!record) {
-      this.logger.info(`model pref saved (no active session): key=${key} → ${route.provider}/${route.model}`);
+      this.logger.info(`model pref saved (no active session): chat=${chatId} key=${key} → ${route.provider}/${route.model}`);
       return;
     }
 
     const sessionsService = this.getSessionsService();
     if (!sessionsService) {
       this.logger.warn(`fork unavailable, fallback to dispose: key=${key}`);
-      await this.disposeRecord();
+      await this.disposeRecordFor(key);
       return;
     }
 
@@ -386,7 +401,7 @@ export class DshSessionManager {
       seed = sessionsService.fork(record.agent.session).events;
     } catch (err) {
       this.logger.warn(`fork failed, fallback to dispose: key=${key} err=${err instanceof Error ? err.message : String(err)}`);
-      await this.disposeRecord();
+      await this.disposeRecordFor(key);
       return;
     }
 
@@ -410,21 +425,21 @@ export class DshSessionManager {
     this.modelResolver.setSessionId(key, childId);
 
     const oldHandle = record.handle;
-    this.record = {
+    this.records.set(key, {
       sessionKey: key,
       sessionId: childId,
       agent: created.agent,
       handle: created,
       lastActivity: Date.now(),
       agentPreset: composed.agentPreset,
-    };
+    });
 
     await oldHandle.dispose().catch(() => {});
-    this.logger.info(`model switched via fork: key=${key} → ${route.provider}/${route.model} sessionId=${childId}`);
+    this.logger.info(`model switched via fork: chat=${chatId} key=${key} → ${route.provider}/${route.model} sessionId=${childId}`);
   }
 
-  clearModelOverride(): void {
-    const key = this.sessionKey;
+  clearModelOverride(chatId: string): void {
+    const key = this.sessionKeyFor(chatId);
     this.modelResolver.clearOverride(key);
     this.modelResolver.clearSessionId(key);
   }
@@ -437,7 +452,7 @@ export class DshSessionManager {
     return this.modelResolver.listProviders();
   }
 
-  /** 列出持久化会话（/resume 列表用） */
+  /** 列出持久化会话（/resume 列表用；全局） */
   async listPersistedSessions(): Promise<Array<{ id: string }>> {
     try {
       const persistence = this.ctx.get("sessionPersistence") as unknown as SessionPersistenceLike | undefined;
@@ -448,6 +463,18 @@ export class DshSessionManager {
       this.logger.warn(`listPersistedSessions failed: ${err instanceof Error ? err.message : String(err)}`);
       return [];
     }
+  }
+
+  /** 闲置回收：dispose 超过 timeout 且空闲的 chat agent，返回被回收的 sessionId 列表 */
+  async evictIdle(timeoutMs: number, now = Date.now()): Promise<string[]> {
+    const evicted: string[] = [];
+    for (const [key, record] of [...this.records]) {
+      if (record.agent.status === "idle" && now - record.lastActivity > timeoutMs) {
+        evicted.push(record.sessionId);
+        await this.disposeRecordFor(key);
+      }
+    }
+    return evicted;
   }
 
   private getSessionsService(): SessionsService | undefined {
@@ -471,17 +498,20 @@ export class DshSessionManager {
     return count;
   }
 
-  private async disposeRecord(): Promise<void> {
-    const record = this.record;
+  private async disposeRecordFor(key: string): Promise<void> {
+    const record = this.records.get(key);
     if (!record) return;
-    this.record = null;
+    this.records.delete(key);
     record.agent.cancel({ kind: "user" });
     await record.handle.dispose().catch(() => {});
-    this.logger.info(`session disposed: key=${this.sessionKey} sessionId=${record.sessionId}`);
+    this.logger.info(`session disposed: key=${key} sessionId=${record.sessionId}`);
   }
 
   async disposeAll(): Promise<void> {
-    await this.disposeRecord();
+    const keys = [...this.records.keys()];
+    for (const key of keys) {
+      await this.disposeRecordFor(key);
+    }
   }
 }
 

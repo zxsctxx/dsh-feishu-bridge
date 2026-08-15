@@ -111,7 +111,7 @@ export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void
       streaming?.release();
       // turn/end emit 时 agent 可能尚未收敛为 idle；等待收敛后再放行队列，
       // 否则 flushAllQueues 会因 isAgentIdle=false 跳过且无独立触发器（P1-3）
-      await waitAgentIdle();
+      await waitAgentIdle(chatId);
       flushAllQueues();
       flashStatus(phase === "completed" ? "飞书: ✅ 完成" : "飞书: ⏹ 结束");
       await configReload.afterSettled(hotReloadConfig);
@@ -139,7 +139,7 @@ export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void
           if (streaming?.activeSession?.chatId === chatId) {
             await streaming.abort(`任务超时（${sec}s）`, "timeout");
           }
-          manager.cancel();
+          manager.cancel(chatId);
           await client?.stopTyping(chatId, false).catch(() => {});
           // 取消后 agent 会走 turn/end → settle 释放；兜底放开本 chat 队列
           queues.setProcessing(chatId, false);
@@ -322,7 +322,7 @@ export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void
       if (streaming?.activeSession?.chatId === chatId) {
         await streaming.abort("被同会话新消息打断", "user_abort");
       }
-      manager.cancel();
+      manager.cancel(chatId);
       client?.stopTyping(chatId, false).catch(() => {});
       await client?.sendMessage(
         chatId,
@@ -369,9 +369,9 @@ export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void
       await streaming?.start(chatId, item.msgId);
       armTaskTimeout(chatId);
 
-      // 发送给 dsh Agent
+      // 发送给 dsh Agent（per-chat：每个 chat 独立 agent 与上下文）
       const fullContent = [item.text, ...resourceParts].filter(Boolean).join("\n");
-      await manager.sendMessage(fullContent);
+      await manager.sendMessage(chatId, fullContent);
     } catch (err) {
       // 媒体下载或投递失败：告知用户而非静默丢弃，并释放队列
       clearTaskTimeout();
@@ -393,7 +393,7 @@ export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void
     if (streaming?.activeSession) await streaming.abort("会话控制命令中断当前任务");
     client?.stopTyping(chatId, false).catch(() => {});
     queues.reset(chatId);
-    manager.cancel();
+    manager.cancel(chatId);
   }
 
   /** 处理从飞书发来的斜杠命令（不会发给 LLM，直接扩展层执行） */
@@ -431,11 +431,10 @@ export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void
     });
   }
 
-  /** 等待共享 agent 收敛到 idle；带超时防挂起 */
-  async function waitAgentIdle(timeoutMs = 5000): Promise<void> {
-    if (manager.isIdle) return;
-    const agent = manager.current?.agent;
-    if (!agent) return;
+  /** 等待指定 chat 的 agent 收敛到 idle；带超时防挂起 */
+  async function waitAgentIdle(chatId: string, timeoutMs = 5000): Promise<void> {
+    const agent = manager.recordFor(chatId)?.agent;
+    if (!agent || agent.status === "idle") return;
     await Promise.race([
       agent.whenIdle(),
       new Promise<void>((resolve) => { setTimeout(resolve, timeoutMs); }),
@@ -457,15 +456,17 @@ export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void
 
     startFeishuClient();
 
-    // 闲置回收：超过 sessionIdleTimeout 且 agent 空闲时 dispose，下次消息自动 resume
+    // 闲置回收：超过 sessionIdleTimeout 且 agent 空闲的 chat 会话 dispose，
+    // 下次消息自动 resume（per-chat：逐个 chat 独立回收）
     const idleTimeout = config.sessionIdleTimeout ?? 30 * 60 * 1000;
     idleTimer = setInterval(() => {
-      const record = manager.current;
-      if (!record || !manager.isIdle) return;
-      if (Date.now() - record.lastActivity > idleTimeout) {
-        logger.info(`evicting idle session: sessionId=${record.sessionId}`);
-        void manager.disposeAll().catch(() => {});
-      }
+      void manager.evictIdle(idleTimeout).then((evicted) => {
+        if (evicted.length > 0) {
+          logger.info(`evicted idle sessions: ${evicted.join(", ")}`);
+        }
+      }).catch((err) => {
+        warn(`idle eviction failed: ${describeError(err)}`);
+      });
     }, Math.min(idleTimeout, 60_000));
     if (typeof idleTimer === "object" && idleTimer && "unref" in idleTimer) {
       (idleTimer as NodeJS.Timeout).unref?.();

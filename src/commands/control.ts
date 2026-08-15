@@ -17,7 +17,7 @@ export const stopCommand: CommandHandler = {
     ctx.queues.reset(ctx.chatId);
 
     // 取消 dsh agent 的当前轮次（turn/end 到达后 settle 封卡）
-    ctx.manager.cancel();
+    ctx.manager.cancel(ctx.chatId);
 
     if (clearedCount > 0) return `已中断当前处理，并清空 ${clearedCount} 条排队消息。`;
     return "已中断当前处理。";
@@ -42,7 +42,7 @@ export const modelCommand: CommandHandler = {
   name: "/model",
   help: "查看/切换模型（/model <provider/model>）",
   async handle(ctx) {
-    const current = ctx.manager.getEffectiveModel();
+    const current = ctx.manager.getEffectiveModel(ctx.chatId);
 
     if (!ctx.args.trim()) {
       const models = ctx.manager.listAvailableModels();
@@ -70,10 +70,10 @@ export const modelCommand: CommandHandler = {
     const route = { provider: arg.slice(0, slash), model: arg.slice(slash + 1) };
 
     try {
-      const busyNote = ctx.manager.current && !ctx.manager.isIdle
+      const busyNote = ctx.manager.recordFor(ctx.chatId) && !ctx.manager.isIdleFor(ctx.chatId)
         ? "\n（当前任务已中断，会话已用新模型重建，可重新发送消息）"
         : "";
-      await ctx.manager.setModelOverride(route);
+      await ctx.manager.setModelOverride(ctx.chatId, route);
       return `已切换模型: ${route.provider}/${route.model}${busyNote}`;
     } catch (error) {
       return `切换失败：${error instanceof Error ? error.message : String(error)}`;

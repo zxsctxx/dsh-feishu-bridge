@@ -15,7 +15,7 @@ export const newCommand: CommandHandler = {
     await ctx.prepareSessionControl();
     const statusMessageId = await ctx.client?.sendStatusCard(ctx.chatId, "正在新建会话…", ctx.msgId);
     try {
-      const newId = await ctx.manager.reset();
+      const newId = await ctx.manager.reset(ctx.chatId);
       const text = `已新建会话。先前上下文已清空，可继续对话。\n（新 session: ${newId.slice(0, 8)}…；如需找回，用 /resume）`;
       if (ctx.client && statusMessageId) {
         await ctx.client.updateTextCard(statusMessageId, text).catch(() => {});
@@ -51,7 +51,7 @@ export const resumeCommand: CommandHandler = {
 
     // 无参数 → 仅列表
     if (!arg) {
-      const current = ctx.manager.sessionId;
+      const current = ctx.manager.sessionIdFor(ctx.chatId);
       const lines = sessions.map((s, i) => {
         const marker = s.id === current ? " ← 当前" : "";
         return `  ${i + 1}. ${s.id}${marker}`;
@@ -72,13 +72,13 @@ export const resumeCommand: CommandHandler = {
       return `未找到匹配的会话：${arg}\n（用 /resume 查看全部会话 id）`;
     }
 
-    if (target === ctx.manager.sessionId && ctx.manager.current) {
+    if (target === ctx.manager.sessionIdFor(ctx.chatId) && ctx.manager.recordFor(ctx.chatId)) {
       return "已在该会话中。";
     }
 
     await ctx.prepareSessionControl();
     const statusMessageId = await ctx.client?.sendStatusCard(ctx.chatId, `正在恢复会话：${target.slice(0, 8)}…`, ctx.msgId);
-    const ok = await ctx.manager.resumeSession(target);
+    const ok = await ctx.manager.resumeSession(ctx.chatId, target);
     const text = ok ? `已恢复会话：${target}` : `恢复会话失败：${target}`;
     if (ctx.client && statusMessageId) {
       await ctx.client.updateTextCard(statusMessageId, text).catch(() => {});

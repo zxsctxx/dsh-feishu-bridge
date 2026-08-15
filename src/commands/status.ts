@@ -14,8 +14,8 @@ export const statusCommand: CommandHandler = {
   async handle(ctx) {
     const pending = ctx.queues.pendingFor(ctx.chatId);
     const appId = ctx.config.appId ? `****${ctx.config.appId.slice(-4)}` : "未设置";
-    const status = ctx.manager.getStatus();
-    const usage = ctx.manager.getTokenUsage();
+    const status = ctx.manager.getStatus(ctx.chatId);
+    const usage = ctx.manager.getTokenUsage(ctx.chatId);
 
     let reply = `DSH 状态:\n- 飞书连接: ${ctx.client?.getStatus() ?? "未启动"}\n- App ID: ${appId}`;
 

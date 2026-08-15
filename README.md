@@ -2,8 +2,6 @@
 
 通过飞书/Lark 官方 Bot API WebSocket 长连接，将飞书作为 **DeepSeek Harness（DSH）** 的受控聊天入口。使用 CardKit v2 原生元素流式 API 输出。
 
-本项目由 [pi-feishu-bridge](https://github.com/zxsctxx/pi-feishu-bridge)（Pi agent 扩展）移植并适配而来：飞书层（WebSocket 客户端、CardKit 流式卡片、访问控制、消息队列、澄清卡）沿用其设计，Agent 对接层参考 [dsh-qqbot](https://github.com/tencent-connect/dsh-qqbot) 的 DSH 对接逻辑（`ctx.agents` 服务 + `session/event` 事件流）重写。
-
 ## 架构
 
 ```
@@ -15,7 +13,7 @@
 
 - **入站**：飞书消息 → 访问控制 → 斜杠命令/消息队列 → `createUserMessage` → `agent.followup()`
 - **出站**：监听 `session/event`：`assistant/chunk`（text/reasoning delta）、`tool/call`、`tool/result`、`assistant/message`、`turn/end` → 单卡流式刷新，`turn/end` 封卡
-- **会话**：一个插件实例 = 一个共享 dsh Agent（由 `preset`/`cwd` 决定），多个飞书 chat 通过互斥队列共享（对齐 pi-feishu-bridge 的安全边界哲学——**不伪造多租户隔离**，多租户请分别启动 DSH profile）
+- **会话**：**每个飞书 chat 一个独立的 dsh Agent**（含独立上下文、模型路由与工具状态；sessionId 由 chatId 确定性派生，重启后自动恢复各自会话）。处理调度全局串行：同一时刻只处理一个 chat 的消息，其余进入互斥队列等待，保证单活动会话的卡片状态一致
 
 ## 主要能力
 
@@ -25,7 +23,7 @@
 - **访问控制** — allowlist 白名单 + 群聊 @ 校验，未授权请求无法进入 Agent
 - **弹性容错** — 飞书 API 限频（429）与瞬时错误自动退避重试，WebSocket 断线自动重连，回复目标被撤回时回退为新建消息或优雅终止
 - **媒体收发** — 文本/富文本/图片/文件的收发；音频/视频消息识别为占位文本并尝试下载；支持 Reaction 输入指示（处理中 Typing、失败 CrossMark）
-- **实用工具** — `send_to_feishu` / `send_image_to_feishu` / `send_file_to_feishu` / `ask_feishu`（注册进共享 agent 的 scoped 工具集）
+- **实用工具** — `send_to_feishu` / `send_image_to_feishu` / `send_file_to_feishu` / `ask_feishu`（注册进各 chat agent 的 scoped 工具集）
 - **会话管理** — `/new` 清空上下文；`/resume` 列出/恢复持久化会话；`/model` 切换模型（fork 重建）；`/stop` 中断
 
 ## 安装
@@ -88,7 +86,7 @@ dsh --profile web --patch /path/to/dsh-feishu-bridge/feishu.patch.yml
 | `provider` / `model` | 宿主默认 | LLM 路由；缺省沿用宿主默认模型 |
 | `preset` | 宿主默认 | Agent preset id（工具集/prompt 等） |
 | `cwd` | `process.cwd()` | Agent 工作目录 |
-| `registerBridgeTools` | `true` | 是否把飞书工具注册进共享 agent |
+| `registerBridgeTools` | `true` | 是否把飞书工具注册进每个 chat 的 agent |
 | `flushIntervalMs` | 200 | 流式刷新节流间隔(ms) |
 | `showThinking` | `false` | 默认不展示推理正文 |
 | `accessPolicy` | `allowlist` | 默认白名单；开发可显式设 `open` |
@@ -145,20 +143,9 @@ dsh --profile web --patch /path/to/dsh-feishu-bridge/feishu.patch.yml
 ```bash
 npm install
 npm run typecheck   # tsc --noEmit
-npm test            # vitest run（复用 pi-feishu-bridge 的纯逻辑测试）
+npm test            # vitest run（纯逻辑与 DSH 对接层测试）
 npm run build       # tsc
 ```
-
-## 设计说明（与 pi-feishu-bridge 的差异）
-
-| 层 | pi-feishu-bridge（Pi） | dsh-feishu-bridge（DSH） |
-|---|---|---|
-| 插件形态 | Pi extension（`pi.registerTool` 等） | Cordis 插件（`inject: ['agents']` + `Config` Schema） |
-| 入站投递 | `pi.sendUserMessage()` | `createUserMessage()` + `agent.followup()` |
-| 出站事件 | `message_update` / `tool_execution_*` / `agent_settled` | `session/event`（`assistant/chunk` / `tool/call` / `turn/end`） |
-| 会话管理 | 单 Pi session 共享 | 单共享 dsh Agent（确定性 sessionId，重启可 resume；需宿主启用会话持久化） |
-| 模型切换 | `pi.setModel()` | fork + `agents.create`（带 seed，模型路由持久化） |
-| 工具注册 | `pi.registerTool` | `defineTool` 注册进 agent scoped `ctx.tools` |
 
 ## License
 
