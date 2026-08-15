@@ -221,7 +221,23 @@ export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void
     logger.debug(message);
   }
 
-  async function handleWorkspaceCardAction(action: { value: Record<string, unknown>; senderOpenId: string; chatId: string }): Promise<void> {
+  async function dismissWorkspaceCard(messageId: string, chatId: string, text: string): Promise<void> {
+    const activeClient = client;
+    if (!activeClient || !messageId) {
+      await activeClient?.sendMessage(chatId, text);
+      return;
+    }
+    try {
+      await activeClient.updateTextCard(messageId, "✅ " + text);
+      return;
+    } catch (error) {
+      logger.warn("workspace card replacement failed: " + describeError(error));
+    }
+    // PATCH 失败时保留原卡片，不撤回消息；额外发送结果避免用户无反馈。
+    await activeClient.sendMessage(chatId, text);
+  }
+
+  async function handleWorkspaceCardAction(action: { value: Record<string, unknown>; senderOpenId: string; chatId: string; messageId: string }): Promise<void> {
     try {
       if (!action.chatId) throw new Error("无法确认卡片所属 chat，请重新发送 /workspace");
       const payload = verifyWorkspaceCardPayload(config.appSecret, action.value, action.chatId);
@@ -236,13 +252,13 @@ export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void
         await prepareSessionControl(action.chatId);
         const result = await manager.switchWorkspace(action.chatId, payload.workspaceId, payload.mode ?? "reset");
         const context = result.preservedContext ? "旧上下文已复制。" : "已创建新的会话，未复制旧上下文。";
-        await client?.sendMessage(action.chatId, result.changed ? "已切换工作区：" + result.workspace.title + "\n路径：" + result.workspace.path + "\n" + context : "当前已经是工作区：" + result.workspace.title);
+        await dismissWorkspaceCard(action.messageId, action.chatId, result.changed ? "已切换工作区：" + result.workspace.title + "\n路径：" + result.workspace.path + "\n" + context : "当前已经是工作区：" + result.workspace.title);
         return;
       }
       if (!manager.isIdleFor(action.chatId)) throw new Error("当前 chat 正在处理中，请等待完成或先执行 /stop");
       await prepareSessionControl(action.chatId);
       const result = await manager.resetWorkspace(action.chatId);
-      await client?.sendMessage(action.chatId, result.changed ? "已恢复默认工作区：" + result.workspace.title + "\n路径：" + result.workspace.path : "当前 chat 没有单独的工作区选择，仍使用：" + result.workspace.title);
+      await dismissWorkspaceCard(action.messageId, action.chatId, result.changed ? "已恢复默认工作区：" + result.workspace.title + "\n路径：" + result.workspace.path : "当前 chat 没有单独的工作区选择，仍使用：" + result.workspace.title);
     } catch (error) {
       logger.warn("workspace card action failed: " + describeError(error));
       if (action.chatId) await client?.sendMessage(action.chatId, "工作区卡片操作失败：" + describeError(error));

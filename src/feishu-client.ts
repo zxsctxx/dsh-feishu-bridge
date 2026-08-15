@@ -176,7 +176,7 @@ export class FeishuClient {
     | null = null;
   private onStatusChangeCallback: ((status: BridgeStatus) => void) | null = null;
   private onCardActionCallback: ((action: { clarifyId: string; choice: string; senderOpenId: string }) => void) | null = null;
-  private onWorkspaceActionCallback: ((action: { value: Record<string, unknown>; senderOpenId: string; chatId: string }) => void) | null = null;
+  private onWorkspaceActionCallback: ((action: { value: Record<string, unknown>; senderOpenId: string; chatId: string; messageId: string }) => void) | null = null;
 
   // Reaction 跟踪：chatId → { msgId, reactionId }
   private typingMessages: Map<string, { msgId: string; reactionId: string }> = new Map();
@@ -238,7 +238,8 @@ export class FeishuClient {
             this.onCardActionCallback?.({ clarifyId, choice, senderOpenId });
           } else if (parsed?.kind === "workspace") {
             const chatId = data?.context?.open_chat_id ?? data?.open_chat_id ?? "";
-            this.onWorkspaceActionCallback?.({ value: parsed, senderOpenId, chatId });
+             const messageId = data?.context?.open_message_id ?? data?.open_message_id ?? "";
+            this.onWorkspaceActionCallback?.({ value: parsed, senderOpenId, chatId, messageId });
           }
         },
       });
@@ -445,6 +446,7 @@ export class FeishuClient {
     await this.updateCard(messageId, FeishuClient.buildTextCard(text));
   }
 
+
   // ─── 媒体收发 ──────────────────────────────────────────
 
   /** 下载消息中的资源（图片/文件）到本地临时目录 */
@@ -621,7 +623,7 @@ export class FeishuClient {
 
   setOnCardAction(cb: (action: { clarifyId: string; choice: string; senderOpenId: string }) => void): void { this.onCardActionCallback = cb; }
 
-  setOnWorkspaceAction(cb: (action: { value: Record<string, unknown>; senderOpenId: string; chatId: string }) => void): void { this.onWorkspaceActionCallback = cb; }
+  setOnWorkspaceAction(cb: (action: { value: Record<string, unknown>; senderOpenId: string; chatId: string; messageId: string }) => void): void { this.onWorkspaceActionCallback = cb; }
 
   // ─── 内部方法 ───────────────────────────────────────
 
