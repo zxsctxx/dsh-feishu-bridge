@@ -23,11 +23,14 @@ import type { BridgeConfig } from "../config.js";
 import type { Logger } from "../types.js";
 import { ModelResolver, type ModelRoute } from "./model-resolver.js";
 import { PresetPrefsStore } from "./preset-prefs.js";
-import { WorkspaceResolver, type EffectiveWorkspace, type WorkspaceInfo } from "./workspace.js";
+import { DisabledWorkspaceResolver, HostWorkspaceResolver } from "./workspace-host.js";
+import type { WorkspaceBackend } from "./workspace-backend.js";
+import { WorkspaceResolver, type EffectiveWorkspace, type WorkspaceController, type WorkspaceInfo } from "./workspace.js";
 import { SessionOwnershipStore } from "./session-owners.js";
 import { streamMetricsFromEvents } from "../session/usage.js";
 import type {
   AgentPresetsLike,
+  PersistedSessionInfo,
   PresetComposition,
   SessionRecord,
   SessionStatus,
@@ -51,7 +54,7 @@ export class DshSessionManager {
   /** 预设偏好持久化（per-chat + 全局默认），运行时命令可改 */
   private readonly presetPrefs: PresetPrefsStore;
   /** V1 工作区注册与 per-chat 选择 */
-  private readonly workspaces: WorkspaceResolver;
+  private readonly workspaces: WorkspaceController;
   /** /resume 的 per-chat session 归属索引 */
   private readonly sessionOwners: SessionOwnershipStore;
   /** 本插件管理过的 sessionId 集合：/new、/model fork 后旧会话的
@@ -87,18 +90,36 @@ export class DshSessionManager {
     sessionOwnersPath?: string,
     /** workspace registry 文件路径覆盖（仅供测试注入临时路径） */
     workspaceRegistryPath?: string,
+    /** V3 host backend；未提供时保持 V2 local。 */
+    workspaceBackend?: WorkspaceBackend,
+    /** host alias 映射文件路径覆盖（仅供测试注入临时路径） */
+    workspaceMigrationPath?: string,
   ) {
     this.modelResolver = new ModelResolver(ctx, config, logger);
     this.presetPrefs = new PresetPrefsStore(
       config.debug ? (msg) => this.logger?.debug(msg) : undefined,
       presetPrefsPath,
     );
-    this.workspaces = new WorkspaceResolver(
+    const localResolver = new WorkspaceResolver(
       config,
       workspacePrefsPath,
       (message) => this.logger.warn(message),
       workspaceRegistryPath,
+      workspaceBackend?.mode !== "host",
+      workspaceBackend?.mode === "host",
     );
+    this.workspaces = workspaceBackend?.mode === "host"
+      ? new HostWorkspaceResolver(
+          config,
+          workspaceBackend,
+          workspacePrefsPath,
+          localResolver,
+          (message) => this.logger.warn(message),
+          workspaceMigrationPath,
+        )
+      : workspaceBackend?.mode === "disabled"
+        ? new DisabledWorkspaceResolver(config)
+        : localResolver;
     this.sessionOwners = new SessionOwnershipStore(sessionOwnersPath);
   }
 
@@ -172,11 +193,11 @@ export class DshSessionManager {
     return this.modelResolver.getEffectiveRoute(this.sessionKeyFor(chatId));
   }
 
-  listWorkspaces(): WorkspaceInfo[] {
+  async listWorkspaces(): Promise<WorkspaceInfo[]> {
     return this.workspaces.list();
   }
 
-  getEffectiveWorkspace(chatId: string): EffectiveWorkspace {
+  async getEffectiveWorkspace(chatId: string): Promise<EffectiveWorkspace> {
     return this.workspaces.getEffective(chatId);
   }
 
@@ -190,15 +211,15 @@ export class DshSessionManager {
     return (this.config.workspaceAdminOpenIds ?? []).includes(senderOpenId);
   }
 
-  addWorkspace(workspaceId: string, path: string, title?: string): WorkspaceInfo {
+  async addWorkspace(workspaceId: string, path: string, title?: string): Promise<WorkspaceInfo> {
     return this.workspaces.addRuntime(workspaceId, path, title);
   }
 
-  removeWorkspace(workspaceId: string): void {
-    this.workspaces.removeRuntime(workspaceId);
+  async removeWorkspace(workspaceId: string): Promise<void> {
+    await this.workspaces.removeRuntime(workspaceId);
   }
 
-  renameWorkspace(workspaceId: string, title: string): WorkspaceInfo {
+  async renameWorkspace(workspaceId: string, title: string): Promise<WorkspaceInfo> {
     return this.workspaces.renameRuntime(workspaceId, title);
   }
 
@@ -207,13 +228,13 @@ export class DshSessionManager {
     workspaceId: string,
     mode: "reset" | "keep-context" = "reset",
   ): Promise<{ changed: boolean; workspace: EffectiveWorkspace; sessionId?: SessionId; preservedContext?: boolean }> {
-    const current = this.workspaces.getEffective(chatId);
-    const targetInfo = this.workspaces.registeredWorkspace(workspaceId, true);
+    const current = await this.workspaces.getEffective(chatId);
+    const targetInfo = await this.workspaces.registeredWorkspace(workspaceId, true);
     if (targetInfo.id === current.id && targetInfo.path === current.path) {
       return { changed: false, workspace: { ...targetInfo, source: current.source } };
     }
     if (mode === "keep-context") return this.switchWorkspaceWithContext(chatId, targetInfo);
-    const target = this.workspaces.select(chatId, workspaceId);
+    const target = await this.workspaces.select(chatId, workspaceId);
     const sessionId = await this.rotateSession(chatId);
     return { changed: true, workspace: target, sessionId, preservedContext: false };
   }
@@ -222,7 +243,7 @@ export class DshSessionManager {
     const key = this.sessionKeyFor(chatId);
     const record = this.records.get(key);
     if (!record) {
-      const target = this.workspaces.select(chatId, targetInfo.id);
+      const target = await this.workspaces.select(chatId, targetInfo.id);
       const sessionId = await this.rotateSession(chatId);
       return { changed: true, workspace: target, sessionId, preservedContext: false };
     }
@@ -250,7 +271,13 @@ export class DshSessionManager {
       ...(route ? { agentOptions: route } : {}),
       ...(setup ? { setup } : {}),
     });
-    const target = this.workspaces.select(chatId, targetInfo.id);
+    try {
+      await this.workspaces.attachSession(targetInfo.id, childId);
+    } catch (error) {
+      await created.dispose().catch(() => {});
+      throw new Error("新会话未能归属目标工作区，工作区未切换：" + (error instanceof Error ? error.message : String(error)), { cause: error });
+    }
+    const target = await this.workspaces.select(chatId, targetInfo.id);
     this.registerSession(childId, chatId);
     this.modelResolver.setSessionId(key, childId);
     this.records.set(key, { sessionKey: key, sessionId: childId, agent: created.agent, handle: created, lastActivity: Date.now(), agentPreset: composed.agentPreset });
@@ -260,13 +287,13 @@ export class DshSessionManager {
 
   async resetWorkspace(chatId: string): Promise<{ changed: boolean; workspace: EffectiveWorkspace; sessionId?: SessionId }> {
     const hadSelection = this.workspaces.currentSelection(chatId) !== undefined;
-    const target = this.workspaces.reset(chatId);
+    const target = await this.workspaces.reset(chatId);
     if (!hadSelection) return { changed: false, workspace: target };
     const sessionId = await this.rotateSession(chatId);
     return { changed: true, workspace: target, sessionId };
   }
 
-  private effectiveWorkspace(chatId: string): EffectiveWorkspace {
+  private async effectiveWorkspace(chatId: string): Promise<EffectiveWorkspace> {
     return this.workspaces.getEffective(chatId);
   }
 
@@ -280,13 +307,13 @@ export class DshSessionManager {
     return newId;
   }
 
-  getStatus(chatId: string): SessionStatus {
+  async getStatus(chatId: string): Promise<SessionStatus> {
     const key = this.sessionKeyFor(chatId);
     const record = this.recordFor(chatId);
     // 模型优先显示最近一次实际请求（与页脚口径一致）；无请求时回退有效路由
     const last = this.lastRequestHeader(record);
     const route = this.getEffectiveModel(chatId);
-    const workspace = this.effectiveWorkspace(chatId);
+    const workspace = await this.effectiveWorkspace(chatId);
     return {
       active: !!record,
       // 无活跃 record（如刚重启）时仍显示确定性派生的 sessionId
@@ -534,11 +561,12 @@ export class DshSessionManager {
     const composed = await this.composePreset(this.effectivePresetId(key));
     const route = this.modelResolver.getEffectiveRoute(key);
     const setup = this.combinedSetup(composed, chatId);
+    const workspace = await this.effectiveWorkspace(chatId);
     const created = await this.agents.create({
       sessionId: childId,
       seed,
       meta: {
-        cwd: this.effectiveWorkspace(chatId).path,
+        cwd: workspace.path,
         parentSession: record.sessionId,
         seedLength: seed.length,
         ...(composed.agentPreset ? { agentPreset: composed.agentPreset } : {}),
@@ -546,6 +574,13 @@ export class DshSessionManager {
       ...(route ? { agentOptions: route } : {}),
       ...(setup ? { setup } : {}),
     });
+
+    try {
+      await this.workspaces.attachSession(workspace.id, childId);
+    } catch (error) {
+      await created.dispose().catch(() => {});
+      throw new Error("新会话未能归属当前工作区，预设未切换：" + (error instanceof Error ? error.message : String(error)), { cause: error });
+    }
 
     this.registerSession(childId, chatId);
     this.modelResolver.setSessionId(key, childId);
@@ -668,15 +703,22 @@ export class DshSessionManager {
         const composed = await this.composePreset(this.effectivePresetId(key));
         agentPreset = composed.agentPreset;
         const setup = this.combinedSetup(composed, chatId);
+        const workspace = await this.effectiveWorkspace(chatId);
         const created = await this.agents.create({
           sessionId,
           meta: {
-            cwd: this.effectiveWorkspace(chatId).path,
+            cwd: workspace.path,
             ...(agentPreset ? { agentPreset } : {}),
           },
           ...(route ? { agentOptions: route } : {}),
           ...(setup ? { setup } : {}),
         });
+        try {
+          await this.workspaces.attachSession(workspace.id, sessionId);
+        } catch (error) {
+          await created.dispose().catch(() => {});
+          throw new Error("新会话未能归属当前工作区，未建立会话：" + (error instanceof Error ? error.message : String(error)), { cause: error });
+        }
         agent = created.agent;
         handle = created;
         this.logger.info(`created new session: key=${key} preset=${agentPreset ?? "none"}`);
@@ -736,14 +778,15 @@ export class DshSessionManager {
     }
 
     const header = await this.findPersistedSession(sessionId);
-    const workspace = this.effectiveWorkspace(chatId);
+    const workspace = await this.effectiveWorkspace(chatId);
     if (header?.cwd && !this.workspaces.matchesPath(header.cwd, workspace.path)
-      && !this.workspaces.workspaceIdForPath(header.cwd)) {
+      && !(await this.workspaces.workspaceIdForPath(header.cwd))) {
       this.logger.warn("resume denied: session workspace is not registered chat=" + chatId + " cwd=" + header.cwd);
       return false;
     }
 
-    await this.disposeRecordFor(key);
+    // V3c：恢复目标完成前不释放旧 record；失败时旧 record 与当前 selection 完整保留。
+    const oldRecord = this.records.get(key);
     const target = SessionId(sessionId);
     try {
       const composed = await this.composePreset(this.effectivePresetId(key));
@@ -757,7 +800,7 @@ export class DshSessionManager {
         ...(setup ? { setup } : {}),
       });
       if (header?.cwd && !this.workspaces.matchesPath(header.cwd, workspace.path)) {
-        this.workspaces.adoptSessionPath(chatId, header.cwd);
+        await this.workspaces.adoptSessionPath(chatId, header.cwd);
       }
       this.registerSession(target, chatId);
       this.records.set(key, {
@@ -770,6 +813,10 @@ export class DshSessionManager {
       });
       this.modelResolver.setSessionId(key, sessionId);
       this.logger.info(`session resumed: chat=${chatId} key=${key} sessionId=${sessionId}`);
+      // 新 record 已提交后再释放旧 handle，避免失败路径丢失旧会话。
+      if (oldRecord && oldRecord.handle !== resumed) {
+        await oldRecord.handle.dispose().catch(() => {});
+      }
       return true;
     } catch (err) {
       this.logger.error(`resume failed: chat=${chatId} sessionId=${sessionId} err=${err instanceof Error ? err.message : String(err)}`);
@@ -810,11 +857,12 @@ export class DshSessionManager {
     const childId = SessionId(randomUUID());
     const composed = await this.composePreset(this.effectivePresetId(key));
     const setup = this.combinedSetup(composed, chatId);
+    const workspace = await this.effectiveWorkspace(chatId);
     const created = await this.agents.create({
       sessionId: childId,
       seed,
       meta: {
-        cwd: this.effectiveWorkspace(chatId).path,
+        cwd: workspace.path,
         parentSession: record.sessionId,
         seedLength: seed.length,
         ...(composed.agentPreset ? { agentPreset: composed.agentPreset } : {}),
@@ -822,6 +870,13 @@ export class DshSessionManager {
       agentOptions: route,
       ...(setup ? { setup } : {}),
     });
+
+    try {
+      await this.workspaces.attachSession(workspace.id, childId);
+    } catch (error) {
+      await created.dispose().catch(() => {});
+      throw new Error("新会话未能归属当前工作区，模型/思考强度未切换：" + (error instanceof Error ? error.message : String(error)), { cause: error });
+    }
 
     this.registerSession(childId, chatId);
     this.modelResolver.setSessionId(key, childId);
@@ -931,19 +986,49 @@ export class DshSessionManager {
     return this.modelResolver.listProviders();
   }
 
-  /** 列出当前 chat 已登记的持久化会话；未知归属默认不展示。 */
-  async listPersistedSessions(chatId: string): Promise<Array<{ id: string }>> {
+  /**
+   * 列出当前 chat 已登记的持久化会话；未知归属默认不展示。
+   * DTO 为可扩展的 PersistedSessionInfo；host 模式根据 workspaces.list() 的
+   * sessionIds 补充 Workspace 归属，未归属条目不携带 workspace 字段
+   * （local/V2 模式 workspaces 不填 sessionIds，保持原有纯 id 语义）。
+   */
+  async listPersistedSessions(chatId: string): Promise<PersistedSessionInfo[]> {
+    let ownedSessions: Array<{ id: string }>;
     try {
       const persistence = this.ctx.get("sessionPersistence") as unknown as SessionPersistenceLike | undefined;
       if (!persistence || typeof persistence.list !== "function") return [];
-      const sessions = await persistence.list();
-      return sessions
+      ownedSessions = (await persistence.list())
         .filter((session) => this.ownsSession(chatId, session.id))
         .map((session) => ({ id: session.id }));
     } catch (err) {
       this.logger.warn(`listPersistedSessions failed: ${err instanceof Error ? err.message : String(err)}`);
       return [];
     }
+
+    if (ownedSessions.length === 0) return [];
+    const rows: PersistedSessionInfo[] = ownedSessions.map((session) => ({ id: session.id }));
+
+    try {
+      // 宿主实体 sessionIds 已经是 header 校验后的归属；只读映射，不序列化 live 对象。
+      const workspaces = await this.workspaces.list();
+      const sessionToWorkspace = new Map<string, WorkspaceInfo>();
+      for (const workspace of workspaces) {
+        for (const sessionId of workspace.sessionIds ?? []) {
+          if (!sessionToWorkspace.has(sessionId)) sessionToWorkspace.set(sessionId, workspace);
+        }
+      }
+      for (const row of rows) {
+        const workspace = sessionToWorkspace.get(row.id);
+        if (!workspace) continue;
+        row.workspaceId = workspace.id;
+        row.workspaceTitle = workspace.title;
+        row.workspacePath = workspace.path;
+      }
+    } catch (err) {
+      // 分组只影响展示，不影响恢复；宿主查询失败时降级为未分组列表
+      this.logger.warn(`listPersistedSessions workspace mapping failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return rows;
   }
 
   private async findPersistedSession(sessionId: string): Promise<SessionHeader | undefined> {

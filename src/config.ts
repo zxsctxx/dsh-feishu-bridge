@@ -49,6 +49,10 @@ export interface BridgeConfig {
   workspaceAdminOpenIds?: string[];
   /** V2 运行时注册工作区允许使用的根目录。 */
   workspaceRoots?: string[];
+  /** V3 工作区后端；默认 local 保持 V2 行为，host 缺失时 fail-closed。 */
+  workspaceBackend?: "local" | "host" | "disabled";
+  /** 是否允许后续 V3 迁移阶段写入宿主 Registry。 */
+  workspaceMigration?: "disabled" | "read-only" | "write";
   /** 是否把飞书工具（send_to_feishu 等）注册进共享 agent 的 scoped 工具集 */
   registerBridgeTools: boolean;
 
@@ -114,6 +118,8 @@ export const ConfigSchema: Schema<BridgeConfig> = Schema.object({
   defaultWorkspace: Schema.string().description("默认工作区 ID"),
   workspaceAdminOpenIds: Schema.array(Schema.string()).default([]).description("可切换工作区的用户 open_id"),
   workspaceRoots: Schema.array(Schema.string()).default([]).description("V2 运行时工作区注册允许的根目录"),
+  workspaceBackend: Schema.union(["local", "host", "disabled"]).default("local").description("工作区后端：local、host 或 disabled"),
+  workspaceMigration: Schema.union(["disabled", "read-only", "write"]).default("disabled").description("V3 工作区迁移写入策略"),
   registerBridgeTools: Schema.boolean().default(true).description("是否注册飞书工具（send_to_feishu 等）到共享 agent"),
 
   // ── 流式卡片 ──
@@ -201,6 +207,8 @@ export function applyEnvOverrides(config: BridgeConfig, env: NodeJS.ProcessEnv =
     ["clarifyTimeoutSec", envNumber(env.FEISHU_CLARIFY_TIMEOUT_SEC)],
     ["taskTimeoutSec", envNumber(env.FEISHU_TASK_TIMEOUT_SEC)],
     ["sameChatBusyPolicy", env.FEISHU_SAME_CHAT_BUSY_POLICY],
+    ["workspaceBackend", env.FEISHU_WORKSPACE_BACKEND],
+    ["workspaceMigration", env.FEISHU_WORKSPACE_MIGRATION],
   ];
 
   for (const [key, value] of overlays) {

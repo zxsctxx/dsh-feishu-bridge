@@ -2,7 +2,7 @@
  * Feishu chat 的工作区选择持久化。
  * 只保存 workspace id，不保存本机路径和任何凭据。
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 
@@ -40,6 +40,24 @@ export class WorkspacePrefsStore {
       if (selectedId === workspaceId) return true;
     }
     return false;
+  }
+
+  /** 将已知 V2 ID 改写为 host ID；未知 ID 保留，交由上层显式报告。 */
+  migrateIds(mapping: ReadonlyMap<string, string>): boolean {
+    const next = new Map(this.selections);
+    let changed = false;
+    for (const [scopeKey, workspaceId] of next) {
+      const hostId = mapping.get(workspaceId);
+      if (!hostId || hostId === workspaceId) continue;
+      next.set(scopeKey, hostId);
+      changed = true;
+    }
+    if (!changed) return false;
+    if (!existsSync(this.prefsPath + ".v1.bak")) copyFileSync(this.prefsPath, this.prefsPath + ".v1.bak");
+    this.selections.clear();
+    for (const [scopeKey, workspaceId] of next) this.selections.set(scopeKey, workspaceId);
+    this.write();
+    return true;
   }
 
   private load(): void {

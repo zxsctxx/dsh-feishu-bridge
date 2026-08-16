@@ -17,26 +17,38 @@ export class WorkspaceRegistryError extends Error {}
 export class WorkspaceRegistryStore {
   private readonly filePath: string;
   private readonly entries = new Map<string, WorkspaceDefinition>();
+  private loadError?: WorkspaceRegistryError;
 
-  constructor(filePath?: string) {
+  constructor(filePath?: string, deferLoadErrors = false) {
     this.filePath = filePath ?? resolve(homedir(), ".dsh-feishu-bridge", "workspace-registry.json");
-    this.load();
+    try {
+      this.load();
+    } catch (error) {
+      if (!deferLoadErrors) throw error;
+      this.loadError = error instanceof WorkspaceRegistryError
+        ? error
+        : new WorkspaceRegistryError("工作区 registry 加载失败：" + this.filePath, { cause: error });
+    }
   }
 
   list(): WorkspaceDefinition[] {
+    this.ensureHealthy();
     return [...this.entries.values()].map((entry) => ({ ...entry }));
   }
 
   has(id: string): boolean {
+    this.ensureHealthy();
     return this.entries.has(id);
   }
 
   get(id: string): WorkspaceDefinition | undefined {
+    this.ensureHealthy();
     const entry = this.entries.get(id);
     return entry ? { ...entry } : undefined;
   }
 
   add(definition: WorkspaceDefinition): void {
+    this.ensureHealthy();
     if (this.entries.has(definition.id)) {
       throw new WorkspaceRegistryError("运行时工作区已存在：" + definition.id);
     }
@@ -45,6 +57,7 @@ export class WorkspaceRegistryStore {
   }
 
   remove(id: string): void {
+    this.ensureHealthy();
     if (!this.entries.delete(id)) {
       throw new WorkspaceRegistryError("未找到运行时工作区：" + id);
     }
@@ -52,6 +65,7 @@ export class WorkspaceRegistryStore {
   }
 
   rename(id: string, title: string): WorkspaceDefinition {
+    this.ensureHealthy();
     const current = this.entries.get(id);
     if (!current) throw new WorkspaceRegistryError("未找到运行时工作区：" + id);
     const next = { ...current, title };
@@ -61,6 +75,7 @@ export class WorkspaceRegistryStore {
   }
 
   migrate(definitions: WorkspaceDefinition[]): void {
+    this.ensureHealthy();
     let changed = false;
     for (const definition of definitions) {
       if (this.entries.has(definition.id)) continue;
@@ -68,6 +83,10 @@ export class WorkspaceRegistryStore {
       changed = true;
     }
     if (changed) this.write();
+  }
+
+  private ensureHealthy(): void {
+    if (this.loadError) throw this.loadError;
   }
 
   private load(): void {

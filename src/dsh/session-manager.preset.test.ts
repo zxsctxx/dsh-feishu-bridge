@@ -8,6 +8,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DshSessionManager } from "./session-manager.js";
 import type { BridgeConfig } from "../config.js";
+import type { WorkspaceBackend } from "./workspace-backend.js";
+import { formatResumeList } from "../commands/session.js";
 
 function baseConfig(): BridgeConfig {
   return {
@@ -43,13 +45,19 @@ function baseConfig(): BridgeConfig {
   };
 }
 
-function makeManager(configOverrides: Partial<BridgeConfig> = {}, agentsOverrides: Record<string, unknown> = {}) {
+function makeManager(
+  configOverrides: Partial<BridgeConfig> = {},
+  agentsOverrides: Record<string, unknown> = {},
+  ctxGet?: (key: string) => unknown,
+  workspaceBackend?: WorkspaceBackend,
+) {
   const config = { ...baseConfig(), ...configOverrides };
   const dir = mkdtempSync(join(tmpdir(), "session-manager-preset-"));
   const presetPrefsPath = join(dir, "preset-prefs.json");
   const workspacePrefsPath = join(dir, "workspace-prefs.json");
   const sessionOwnersPath = join(dir, "session-owners.json");
   const workspaceRegistryPath = join(dir, "workspace-registry.json");
+  const workspaceMigrationPath = join(dir, "workspace-migration.json");
   const presets: any = {
     defaultId: "minimal",
     list: async () => [
@@ -69,7 +77,7 @@ function makeManager(configOverrides: Partial<BridgeConfig> = {}, agentsOverride
     },
     mount: async () => {},
   };
-  const ctx: any = { agentPresets: presets, get: () => undefined };
+  const ctx: any = { agentPresets: presets, get: (key: string) => (ctxGet ? ctxGet(key) : undefined) };
   const agents: any = {
     get: () => undefined,
     resume: async () => { throw new Error("no persistence in test"); },
@@ -77,7 +85,7 @@ function makeManager(configOverrides: Partial<BridgeConfig> = {}, agentsOverride
     ...agentsOverrides,
   };
   const logger: any = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} };
-  const manager = new DshSessionManager(ctx, agents, config, logger, () => {}, presetPrefsPath, workspacePrefsPath, sessionOwnersPath, workspaceRegistryPath);
+  const manager = new DshSessionManager(ctx, agents, config, logger, () => {}, presetPrefsPath, workspacePrefsPath, sessionOwnersPath, workspaceRegistryPath, workspaceBackend, workspaceMigrationPath);
   return { manager, dir, config };
 }
 
@@ -207,7 +215,7 @@ describe("getStatus（/status 数据源）", () => {
     ]);
     const { manager, dir } = makeManager({}, { get: () => agent });
     await manager.ensureAgent("oc_a");
-    const status = manager.getStatus("oc_a");
+    const status = await manager.getStatus("oc_a");
     expect(status.provider).toBe("deepseek-official");
     expect(status.model).toBe("deepseek-v4-flash");
     expect(status.reasoningEffort).toBe("max");
@@ -218,17 +226,17 @@ describe("getStatus（/status 数据源）", () => {
     const agent = agentWithEvents([{ type: "user/message", data: {} }]);
     const { manager, dir } = makeManager({ provider: "p", model: "m" }, { get: () => agent });
     await manager.ensureAgent("oc_a");
-    const status = manager.getStatus("oc_a");
+    const status = await manager.getStatus("oc_a");
     expect(status.provider).toBe("p");
     expect(status.model).toBe("m");
     expect(status.reasoningEffort).toBeUndefined();
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("无活跃会话时仍显示派生 sessionId、偏好预设与配置工作区（重启后直接 /status）", () => {
+  it("无活跃会话时仍显示派生 sessionId、偏好预设与配置工作区（重启后直接 /status）", async () => {
     const { manager, dir } = makeManager({ cwd: "/workspace" });
     manager.setChatPreset("oc_a", "code");
-    const status = manager.getStatus("oc_a");
+    const status = await manager.getStatus("oc_a");
     expect(status.active).toBe(false);
     expect(status.sessionId).toBe(manager.sessionIdFor("oc_a"));
     expect(status.preset).toBe("code");
@@ -255,5 +263,121 @@ describe("getLatestRequestStats（footer 上下文 billed 口径）", () => {
     await manager.ensureAgent("oc_a");
     expect(manager.getLatestRequestStats("oc_a").inputTokens).toBe(700); // 200 + 400 + 100
     rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("listPersistedSessions Workspace DTO 映射（V3c）", () => {
+  /** 构造 sessionPersistence fake；headers 可在 manager 构造后按需更新 */
+  function persistenceCtx(headers: Array<{ id: string; cwd?: string }>) {
+    return (key: string) =>
+      key === "sessionPersistence" ? { list: async () => headers } : undefined;
+  }
+
+  it("local/V2 模式不填充 workspace 字段，保持纯 id 列表", async () => {
+    const headers: Array<{ id: string; cwd?: string }> = [];
+    const { manager, dir } = makeManager({}, {}, persistenceCtx(headers));
+    const ownedId = manager.sessionIdFor("oc_a"); // 确定性派生 id，等于 chat 归属
+    headers.push({ id: ownedId, cwd: "/work" });
+
+    const rows = await manager.listPersistedSessions("oc_a");
+    expect(rows).toEqual([{ id: ownedId }]);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("host 模式按 workspaces.list().sessionIds 映射归属", async () => {
+    const headers: Array<{ id: string; cwd?: string }> = [];
+    const memberships: string[] = ["placeholder"];
+    const backend = {
+      mode: "host",
+      list: async () => [
+        { id: "w1", title: "Alpha", path: "/alpha", status: "available" as const, sessionIds: memberships },
+        { id: "w2", title: "Beta", path: "/beta", status: "available" as const, sessionIds: [] },
+      ],
+      get: async () => undefined,
+      resolveByPath: async () => undefined,
+      create: async () => { throw new Error("unused"); },
+      delete: async () => false,
+      rename: async () => { throw new Error("unused"); },
+    } as unknown as WorkspaceBackend;
+    const { manager, dir } = makeManager({}, {}, persistenceCtx(headers), backend);
+    const ownedId = manager.sessionIdFor("oc_a");
+    memberships.length = 0;
+    memberships.push(ownedId);
+    headers.push({ id: ownedId, cwd: "/alpha" });
+
+    const rows = await manager.listPersistedSessions("oc_a");
+    expect(rows).toEqual([
+      { id: ownedId, workspaceId: "w1", workspaceTitle: "Alpha", workspacePath: "/alpha" },
+    ]);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("无 membership 的会话保持未分组（不携带 workspace 字段）", async () => {
+    const headers: Array<{ id: string; cwd?: string }> = [];
+    const backend = {
+      mode: "host",
+      list: async () => [
+        { id: "w1", title: "Alpha", path: "/alpha", status: "available" as const, sessionIds: ["other-1"] },
+      ],
+      get: async () => undefined,
+      resolveByPath: async () => undefined,
+      create: async () => { throw new Error("unused"); },
+      delete: async () => false,
+      rename: async () => { throw new Error("unused"); },
+    } as unknown as WorkspaceBackend;
+    const { manager, dir } = makeManager({}, {}, persistenceCtx(headers), backend);
+    const ownedId = manager.sessionIdFor("oc_a");
+    headers.push({ id: ownedId, cwd: "/elsewhere" });
+
+    const rows = await manager.listPersistedSessions("oc_a");
+    expect(rows).toEqual([{ id: ownedId }]);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("host workspace 查询失败时降级为未分组列表，不丢失会话", async () => {
+    const headers: Array<{ id: string; cwd?: string }> = [];
+    const backend = {
+      mode: "host",
+      list: async () => { throw new Error("host storage error"); },
+      get: async () => undefined,
+      resolveByPath: async () => undefined,
+      create: async () => { throw new Error("unused"); },
+      delete: async () => false,
+      rename: async () => { throw new Error("unused"); },
+    } as unknown as WorkspaceBackend;
+    const { manager, dir } = makeManager({}, {}, persistenceCtx(headers), backend);
+    const ownedId = manager.sessionIdFor("oc_a");
+    headers.push({ id: ownedId, cwd: "/work" });
+
+    const rows = await manager.listPersistedSessions("oc_a");
+    expect(rows).toEqual([{ id: ownedId }]);
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("formatResumeList（V3c 分组渲染）", () => {
+  it("无 workspace 字段时保持原扁平格式，序号连续", () => {
+    const text = formatResumeList([{ id: "a" }, { id: "b" }], "b");
+    expect(text).toContain("共 2 个");
+    expect(text).toContain("1. a");
+    expect(text).toContain("2. b ← 当前");
+    expect(text).not.toContain("未分组");
+  });
+
+  it("host DTO 有归属时按工作区分组，未归属显示未分组，序号仍对应扁平列表", () => {
+    const sessions = [
+      { id: "s1", workspaceId: "w1", workspaceTitle: "Alpha", workspacePath: "/alpha" },
+      { id: "s2" }, // 未分组
+      { id: "s3", workspaceId: "w1", workspaceTitle: "Alpha", workspacePath: "/alpha" },
+    ];
+    const text = formatResumeList(sessions, "s1");
+    expect(text).toContain("按工作区分组");
+    expect(text).toContain("工作区: Alpha");
+    expect(text).toContain("/alpha");
+    expect(text).toContain("未分组");
+    // 序号仍对应扁平顺序
+    expect(text).toContain("1. s1 ← 当前");
+    expect(text).toContain("2. s2");
+    expect(text).toContain("3. s3");
   });
 });

@@ -77,6 +77,9 @@ export interface FeishuConfig {
   sameChatBusyPolicy?: "queue" | "interrupt";
   /** 卡片页脚配置；未配置时使用默认两行布局 */
   footer?: FooterConfig;
+  /** V3 工作区后端；未配置时使用 local/V2 fallback。 */
+  workspaceBackend?: "local" | "host" | "disabled";
+  workspaceMigration?: "disabled" | "read-only" | "write";
 }
 
 export interface InboundResource {

@@ -12,15 +12,36 @@ export interface WorkspaceInfo {
   title: string;
   path: string;
   status: WorkspaceAvailability;
+  /** V3 host migration 生成的兼容 alias；宿主 UUID 仍是唯一主 ID。 */
+  alias?: string;
+  /** 宿主 header 校验后的 session membership；local 模式不填充。 */
+  sessionIds?: string[];
 }
 
 export interface EffectiveWorkspace extends WorkspaceInfo {
   source: WorkspaceSource;
 }
 
+/** WorkspaceResolver 与宿主 Resolver 共用的异步业务接口。 */
+export interface WorkspaceController {
+  currentSelection(chatId: string): string | undefined;
+  list(): Promise<WorkspaceInfo[]>;
+  getEffective(chatId: string): Promise<EffectiveWorkspace>;
+  select(chatId: string, workspaceId: string): Promise<EffectiveWorkspace>;
+  reset(chatId: string): Promise<EffectiveWorkspace>;
+  registeredWorkspace(workspaceId: string, requireAvailable?: boolean): Promise<WorkspaceInfo>;
+  addRuntime(workspaceId: string, path: string, title?: string): Promise<WorkspaceInfo>;
+  removeRuntime(workspaceId: string): Promise<void>;
+  renameRuntime(workspaceId: string, title: string): Promise<WorkspaceInfo>;
+  workspaceIdForPath(path: string): Promise<string | "legacy" | undefined>;
+  adoptSessionPath(chatId: string, path: string): Promise<EffectiveWorkspace>;
+  attachSession(workspaceId: string, sessionId: string): Promise<void>;
+  matchesPath(left: string, right: string): boolean;
+}
+
 export class WorkspaceError extends Error {}
 
-export class WorkspaceResolver {
+export class WorkspaceResolver implements WorkspaceController {
   private readonly prefs: WorkspacePrefsStore;
   private readonly registry: WorkspaceRegistryStore;
   private readonly configuredDefinitions: WorkspaceDefinition[];
@@ -30,11 +51,14 @@ export class WorkspaceResolver {
     prefsPath?: string,
     private readonly warn?: (message: string) => void,
     registryPath?: string,
+    migrateConfiguredDefinitions = true,
+    deferRegistryErrors = false,
   ) {
     this.prefs = new WorkspacePrefsStore(prefsPath);
-    this.registry = new WorkspaceRegistryStore(registryPath);
+    this.registry = new WorkspaceRegistryStore(registryPath, deferRegistryErrors);
     this.configuredDefinitions = config.workspaces ?? [];
-    this.registry.migrate(this.configuredDefinitions);
+    // host 迁移只把 local registry 当只读源，避免 host/local 双写。
+    if (migrateConfiguredDefinitions) this.registry.migrate(this.configuredDefinitions);
   }
 
   scopeKeyFor(chatId: string): string {
@@ -45,13 +69,13 @@ export class WorkspaceResolver {
     return this.prefs.get(this.scopeKeyFor(chatId));
   }
 
-  list(): WorkspaceInfo[] {
+  async list(): Promise<WorkspaceInfo[]> {
     const definitions = this.allDefinitions();
     if (definitions.length === 0) return [this.legacyInfo()];
     return definitions.map((definition) => this.inspectDefinition(definition));
   }
 
-  getEffective(chatId: string): EffectiveWorkspace {
+  async getEffective(chatId: string): Promise<EffectiveWorkspace> {
     const selectedId = this.currentSelection(chatId);
     if (selectedId) {
       if (!this.findDefinition(selectedId)) {
@@ -68,18 +92,18 @@ export class WorkspaceResolver {
     return { ...this.legacyInfo(), source: "legacy" };
   }
 
-  select(chatId: string, workspaceId: string): EffectiveWorkspace {
-    const target = this.resolveNamed(workspaceId, "chat", true);
+  async select(chatId: string, workspaceId: string): Promise<EffectiveWorkspace> {
+    const target = await this.resolveNamed(workspaceId, "chat", true);
     this.prefs.set(this.scopeKeyFor(chatId), target.id);
     return target;
   }
 
-  reset(chatId: string): EffectiveWorkspace {
+  async reset(chatId: string): Promise<EffectiveWorkspace> {
     this.prefs.clear(this.scopeKeyFor(chatId));
     return this.getEffective(chatId);
   }
 
-  registeredWorkspace(workspaceId: string, requireAvailable = true): WorkspaceInfo {
+  async registeredWorkspace(workspaceId: string, requireAvailable = true): Promise<WorkspaceInfo> {
     const definition = this.findDefinition(workspaceId);
     if (!definition) throw new WorkspaceError("未找到工作区：" + workspaceId);
     const info = this.inspectDefinition(definition);
@@ -89,7 +113,7 @@ export class WorkspaceResolver {
     return info;
   }
 
-  addRuntime(workspaceId: string, path: string, title?: string): WorkspaceInfo {
+  async addRuntime(workspaceId: string, path: string, title?: string): Promise<WorkspaceInfo> {
     const id = workspaceId.trim();
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id)) {
       throw new WorkspaceError("工作区 ID 无效：只能使用字母、数字、点、下划线和短横线");
@@ -106,7 +130,7 @@ export class WorkspaceResolver {
     return this.inspectDefinition(definition);
   }
 
-  removeRuntime(workspaceId: string): void {
+  async removeRuntime(workspaceId: string): Promise<void> {
     if (this.configuredDefinitions.some((definition) => definition.id === workspaceId)) {
       throw new WorkspaceError("配置中的工作区不能运行时删除，请修改 profile 配置：" + workspaceId);
     }
@@ -121,7 +145,7 @@ export class WorkspaceResolver {
     }
   }
 
-  renameRuntime(workspaceId: string, title: string): WorkspaceInfo {
+  async renameRuntime(workspaceId: string, title: string): Promise<WorkspaceInfo> {
     if (this.configuredDefinitions.some((definition) => definition.id === workspaceId)) {
       throw new WorkspaceError("配置中的工作区不能运行时重命名，请修改 profile 配置：" + workspaceId);
     }
@@ -135,7 +159,7 @@ export class WorkspaceResolver {
     }
   }
 
-  workspaceIdForPath(path: string): string | "legacy" | undefined {
+  async workspaceIdForPath(path: string): Promise<string | "legacy" | undefined> {
     for (const definition of this.allDefinitions()) {
       if (this.samePath(path, definition.path)) return definition.id;
     }
@@ -143,24 +167,28 @@ export class WorkspaceResolver {
     return undefined;
   }
 
-  adoptSessionPath(chatId: string, path: string): EffectiveWorkspace {
-    const workspaceId = this.workspaceIdForPath(path);
+  async adoptSessionPath(chatId: string, path: string): Promise<EffectiveWorkspace> {
+    const workspaceId = await this.workspaceIdForPath(path);
     if (!workspaceId) throw new WorkspaceError("会话工作区未注册：" + path);
     if (workspaceId === "legacy") this.prefs.clear(this.scopeKeyFor(chatId));
     else this.prefs.set(this.scopeKeyFor(chatId), workspaceId);
     return this.getEffective(chatId);
   }
 
+  async attachSession(_workspaceId: string, _sessionId: string): Promise<void> {
+    // V2 没有宿主 membership；attach 由 V3 host Resolver 实现。
+  }
+
   matchesPath(left: string, right: string): boolean {
     return this.samePath(left, right);
   }
 
-  private resolveNamed(
+  private async resolveNamed(
     workspaceId: string,
     source: Exclude<WorkspaceSource, "legacy">,
     strict: boolean,
-  ): EffectiveWorkspace {
-    const info = this.registeredWorkspace(workspaceId, strict);
+  ): Promise<EffectiveWorkspace> {
+    const info = await this.registeredWorkspace(workspaceId, strict);
     return { ...info, source };
   }
 

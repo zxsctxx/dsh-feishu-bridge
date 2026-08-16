@@ -1,9 +1,19 @@
 import type { FeishuConfig } from "../types.js";
 import { DEFAULT_ACCESS_POLICY } from "../access/policy.js";
 import { PRODUCT_NAME, PRODUCT_VERSION } from "../version.js";
+import {
+  workspaceBackendDiagnostic,
+  workspaceBackendMode,
+  type WorkspaceBackendDiagnostic,
+} from "../dsh/workspace-backend.js";
 
 export interface DoctorFinding { level: "error" | "warning" | "ok"; message: string; }
-export function runDoctor(config: FeishuConfig, connected: boolean, cardkitAvailable: boolean | string | null = null): DoctorFinding[] {
+export function runDoctor(
+  config: FeishuConfig,
+  connected: boolean,
+  cardkitAvailable: boolean | string | null = null,
+  workspaceDiagnostic?: WorkspaceBackendDiagnostic,
+): DoctorFinding[] {
   const findings: DoctorFinding[] = [];
   if (!config.appId) findings.push({ level: "error", message: "缺少 App ID" });
   if (!config.appSecret) findings.push({ level: "error", message: "缺少 App Secret" });
@@ -15,6 +25,12 @@ export function runDoctor(config: FeishuConfig, connected: boolean, cardkitAvail
   if (!connected) findings.push({ level: "warning", message: "飞书 WebSocket/CardKit 尚未连接，无法确认真实 API 可用性" });
   else if (cardkitAvailable === false || typeof cardkitAvailable === "string") findings.push({ level: "error", message: `CardKit 探针失败${typeof cardkitAvailable === "string" ? `：${cardkitAvailable}` : ""}` });
   else if (cardkitAvailable === true) findings.push({ level: "ok", message: "CardKit 创建探针通过" });
+
+  const workspace = workspaceDiagnostic ?? workspaceBackendDiagnostic(workspaceBackendMode(config.workspaceBackend));
+  findings.push({
+    level: workspace.state === "unavailable" ? "error" : "ok",
+    message: workspace.message,
+  });
   if (!findings.some((item) => item.level === "error")) findings.push({ level: "ok", message: "本地配置结构检查通过" });
   return findings;
 }

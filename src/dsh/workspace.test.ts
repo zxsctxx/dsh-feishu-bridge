@@ -46,46 +46,46 @@ function config(root: string): BridgeConfig {
 }
 
 describe("WorkspaceResolver", () => {
-  it("按 default、chat selection、reset 解析工作区并跨实例持久化", () => {
+  it("按 default、chat selection、reset 解析工作区并跨实例持久化", async () => {
     const root = mkdtempSync(join(tmpdir(), "workspace-resolver-"));
     mkdirSync(join(root, "alpha"));
     mkdirSync(join(root, "beta"));
     const prefsPath = join(root, "workspace-prefs.json");
     const resolver = new WorkspaceResolver(config(root), prefsPath, undefined, join(root, "registry.json"));
 
-    expect(resolver.getEffective("chat-a")).toMatchObject({ id: "alpha", title: "Alpha", source: "default" });
-    resolver.select("chat-a", "beta");
-    expect(resolver.getEffective("chat-a")).toMatchObject({ id: "beta", title: "Beta", source: "chat" });
-    expect(resolver.getEffective("chat-b")).toMatchObject({ id: "alpha", source: "default" });
+    await expect(resolver.getEffective("chat-a")).resolves.toMatchObject({ id: "alpha", title: "Alpha", source: "default" });
+    await resolver.select("chat-a", "beta");
+    await expect(resolver.getEffective("chat-a")).resolves.toMatchObject({ id: "beta", title: "Beta", source: "chat" });
+    await expect(resolver.getEffective("chat-b")).resolves.toMatchObject({ id: "alpha", source: "default" });
 
     const restored = new WorkspaceResolver(config(root), prefsPath, undefined, join(root, "registry.json"));
-    expect(restored.getEffective("chat-a")).toMatchObject({ id: "beta", path: join(root, "beta"), source: "chat" });
-    restored.reset("chat-a");
-    expect(restored.getEffective("chat-a")).toMatchObject({ id: "alpha", source: "default" });
+    await expect(restored.getEffective("chat-a")).resolves.toMatchObject({ id: "beta", path: join(root, "beta"), source: "chat" });
+    await restored.reset("chat-a");
+    await expect(restored.getEffective("chat-a")).resolves.toMatchObject({ id: "alpha", source: "default" });
 
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("陈旧 chat 选择会清理并回退默认工作区", () => {
+  it("陈旧 chat 选择会清理并回退默认工作区", async () => {
     const root = mkdtempSync(join(tmpdir(), "workspace-resolver-"));
     mkdirSync(join(root, "alpha"));
     const prefsPath = join(root, "workspace-prefs.json");
     writeFileSync(prefsPath, JSON.stringify({ version: 1, selections: { "cli_test:chat-a": "removed" } }));
     const resolver = new WorkspaceResolver(config(root), prefsPath, undefined, join(root, "registry.json"));
 
-    expect(resolver.getEffective("chat-a")).toMatchObject({ id: "alpha", source: "default" });
+    await expect(resolver.getEffective("chat-a")).resolves.toMatchObject({ id: "alpha", source: "default" });
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("拒绝未知或不可用工作区，列表保留目录状态", () => {
+  it("拒绝未知或不可用工作区，列表保留目录状态", async () => {
     const root = mkdtempSync(join(tmpdir(), "workspace-resolver-"));
     const cfg = config(root);
     cfg.workspaces = [{ id: "missing", path: join(root, "missing") }];
     const resolver = new WorkspaceResolver(cfg, join(root, "prefs.json"), undefined, join(root, "registry.json"));
 
-    expect(resolver.list()).toEqual([{ id: "missing", title: "missing", path: join(root, "missing"), status: "missing" }]);
-    expect(() => resolver.select("chat-a", "unknown")).toThrow(WorkspaceError);
-    expect(() => resolver.select("chat-a", "missing")).toThrow("工作区目录不可用");
+    await expect(resolver.list()).resolves.toEqual([{ id: "missing", title: "missing", path: join(root, "missing"), status: "missing" }]);
+    await expect(resolver.select("chat-a", "unknown")).rejects.toThrow(WorkspaceError);
+    await expect(resolver.select("chat-a", "missing")).rejects.toThrow("工作区目录不可用");
 
     rmSync(root, { recursive: true, force: true });
   });

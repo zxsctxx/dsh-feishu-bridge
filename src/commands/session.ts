@@ -6,7 +6,53 @@
  */
 
 import { describeError } from "../log.js";
+import type { PersistedSessionInfo } from "../dsh/types.js";
 import type { CommandContext, CommandHandler } from "./types.js";
+
+/**
+ * 无参数 /resume 的列表渲染：host DTO 有 Workspace 归属时按组输出，
+ * 未归属显示“未分组”；序号仍对应扁平 session 列表。
+ * local/V2 模式（无 workspaceId）保持原有扁平格式。
+ */
+export function formatResumeList(sessions: PersistedSessionInfo[], current: string): string {
+  const flat = (session: PersistedSessionInfo, index: number): string => {
+    const marker = session.id === current ? " ← 当前" : "";
+    return `  ${index + 1}. ${session.id}${marker}`;
+  };
+
+  if (!sessions.some((session) => session.workspaceId !== undefined)) {
+    const lines = [`可恢复会话（共 ${sessions.length} 个）：`];
+    sessions.forEach((session, index) => lines.push(flat(session, index)));
+    lines.push("", "用法: /resume <序号或 sessionId>");
+    return lines.join("\n");
+  }
+
+  const groups: Array<{ title: string; path?: string; lines: string[] }> = [];
+  const byKey = new Map<string, { title: string; path?: string; lines: string[] }>();
+  for (const [index, session] of sessions.entries()) {
+    const key = session.workspaceId ?? "";
+    let group = byKey.get(key);
+    if (!group) {
+      group = {
+        title: session.workspaceId ? (session.workspaceTitle ?? session.workspaceId) : "未分组",
+        path: session.workspacePath,
+        lines: [],
+      };
+      byKey.set(key, group);
+      groups.push(group);
+    }
+    group.lines.push(flat(session, index));
+  }
+
+  const blocks: string[] = [`可恢复会话（共 ${sessions.length} 个，按工作区分组）：`];
+  for (const group of groups) {
+    const header = group.title === "未分组" ? "未分组" : `工作区: ${group.title}${group.path ? `\n  路径: ${group.path}` : ""}`;
+    blocks.push("", `- ${header}`);
+    blocks.push(...group.lines);
+  }
+  blocks.push("", "用法: /resume <序号或 sessionId>");
+  return blocks.join("\n");
+}
 
 export const newCommand: CommandHandler = {
   name: "/new",
@@ -38,7 +84,7 @@ export const resumeCommand: CommandHandler = {
   help: "列出/恢复历史会话（/resume 列表；/resume <sessionId> 恢复）",
   async handle(ctx: CommandContext): Promise<string | void> {
     const arg = ctx.args.trim();
-    let sessions: Array<{ id: string }>;
+    let sessions: PersistedSessionInfo[];
     try {
       sessions = await ctx.manager.listPersistedSessions(ctx.chatId);
     } catch (error) {
@@ -51,12 +97,7 @@ export const resumeCommand: CommandHandler = {
 
     // 无参数 → 仅列表
     if (!arg) {
-      const current = ctx.manager.sessionIdFor(ctx.chatId);
-      const lines = sessions.map((s, i) => {
-        const marker = s.id === current ? " ← 当前" : "";
-        return `  ${i + 1}. ${s.id}${marker}`;
-      });
-      return [`可恢复会话（共 ${sessions.length} 个）：`, ...lines, "", "用法: /resume <序号或 sessionId>"].join("\n");
+      return formatResumeList(sessions, ctx.manager.sessionIdFor(ctx.chatId));
     }
 
     // 序号解析

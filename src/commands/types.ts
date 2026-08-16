@@ -12,6 +12,7 @@ import type { ClarifyManager } from "../clarify/manager.js";
 import type { MetricsCollector } from "../monitoring/metrics.js";
 import type { MessageQueueManager } from "../queue.js";
 import type { DshSessionManager } from "../dsh/session-manager.js";
+import type { WorkspaceBackendDiagnostic } from "../dsh/workspace-backend.js";
 
 export interface CommandContext {
   /** 命令来源的飞书会话 */
@@ -29,6 +30,7 @@ export interface CommandContext {
   readonly manager: DshSessionManager;
   readonly client: FeishuClient | null;
   readonly config: BridgeConfig;
+  readonly workspaceBackend?: WorkspaceBackendDiagnostic;
   readonly streaming: StreamingCardManager | null;
   readonly clarify: ClarifyManager | null;
   readonly metrics: MetricsCollector;

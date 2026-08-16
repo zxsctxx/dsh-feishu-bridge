@@ -12,20 +12,20 @@ function config(root: string): BridgeConfig {
 }
 
 describe("V2 workspace registry", () => {
-  it("忽略 registry 中越出 workspaceRoots 的篡改条目", () => {
+  it("忽略 registry 中越出 workspaceRoots 的篡改条目", async () => {
     const root = mkdtempSync(join(tmpdir(), "workspace-v2-boundary-"));
     const outside = mkdtempSync(join(tmpdir(), "workspace-v2-outside-"));
     const registryPath = join(root, "registry.json");
     writeFileSync(registryPath, JSON.stringify({ version: 1, workspaces: [{ id: "escape", path: outside }] }));
     const resolver = new WorkspaceResolver(config(root), join(root, "prefs.json"), undefined, registryPath);
 
-    expect(resolver.list()).toEqual([{ id: "default", title: "默认工作区", path: root, status: "available" }]);
-    expect(() => resolver.select("chat", "escape")).toThrow("未找到工作区");
+    await expect(resolver.list()).resolves.toEqual([{ id: "default", title: "默认工作区", path: root, status: "available" }]);
+    await expect(resolver.select("chat", "escape")).rejects.toThrow("未找到工作区");
     rmSync(root, { recursive: true, force: true });
     rmSync(outside, { recursive: true, force: true });
   });
 
-  it("在 workspaceRoots 内增删改名并跨实例持久化", () => {
+  it("在 workspaceRoots 内增删改名并跨实例持久化", async () => {
     const root = mkdtempSync(join(tmpdir(), "workspace-v2-"));
     const project = join(root, "project");
     mkdirSync(project);
@@ -33,14 +33,14 @@ describe("V2 workspace registry", () => {
     const prefsPath = join(root, "prefs.json");
     const resolver = new WorkspaceResolver(config(root), prefsPath, undefined, registryPath);
 
-    expect(resolver.addRuntime("project", project, "Project")).toMatchObject({ id: "project", title: "Project", status: "available" });
-    expect(new WorkspaceResolver(config(root), prefsPath, undefined, registryPath).list()).toHaveLength(1);
-    expect(resolver.renameRuntime("project", "Renamed").title).toBe("Renamed");
-    resolver.select("chat", "project");
-    expect(() => resolver.removeRuntime("project")).toThrow("仍被 chat 使用");
-    resolver.reset("chat");
-    resolver.removeRuntime("project");
-    expect(() => resolver.addRuntime("outside", tmpdir())).toThrow(WorkspaceError);
+    await expect(resolver.addRuntime("project", project, "Project")).resolves.toMatchObject({ id: "project", title: "Project", status: "available" });
+    await expect(new WorkspaceResolver(config(root), prefsPath, undefined, registryPath).list()).resolves.toHaveLength(1);
+    await expect(resolver.renameRuntime("project", "Renamed")).resolves.toMatchObject({ title: "Renamed" });
+    await resolver.select("chat", "project");
+    await expect(resolver.removeRuntime("project")).rejects.toThrow("仍被 chat 使用");
+    await resolver.reset("chat");
+    await resolver.removeRuntime("project");
+    await expect(resolver.addRuntime("outside", tmpdir())).rejects.toThrow(WorkspaceError);
 
     rmSync(root, { recursive: true, force: true });
   });
@@ -84,7 +84,7 @@ describe("V2 keep-context", () => {
     const result = await manager.switchWorkspace("chat", "second", "keep-context");
     expect(result.preservedContext).toBe(true);
     expect(create).toHaveBeenLastCalledWith(expect.objectContaining({ seed: expect.any(Array), meta: expect.objectContaining({ cwd: second }) }));
-    expect(manager.getEffectiveWorkspace("chat").id).toBe("second");
+    await expect(manager.getEffectiveWorkspace("chat")).resolves.toMatchObject({ id: "second" });
     rmSync(root, { recursive: true, force: true });
   });
 });

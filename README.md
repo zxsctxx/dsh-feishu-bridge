@@ -99,6 +99,8 @@ dsh --profile web --patch /path/to/dsh-feishu-bridge/feishu.patch.yml
 | `defaultWorkspace` | 未设置 | 默认工作区 ID，优先级低于 chat 选择 |
 | `workspaceAdminOpenIds` | `[]` | 可切换工作区的用户；未配置时仅允许私聊切换 |
 | `workspaceRoots` | `[]` | V2 运行时注册工作区允许的根目录；为空时禁止 `/workspace add` |
+| `workspaceBackend` | `local` | V3 后端：`local` 保持 V2；`host` 接入宿主 Registry 且不可用时 fail-closed；`disabled` 使用 legacy cwd |
+| `workspaceMigration` | `disabled` | V3 迁移策略：`disabled`、`read-only` 或 `write`；`write` 会保存 host ID 映射并备份旧 chat prefs |
 | `registerBridgeTools` | `true` | 是否把飞书工具注册进每个 chat 的 agent |
 | `flushIntervalMs` | 200 | 流式刷新节流间隔(ms) |
 | `showThinking` | `false` | 默认不展示推理正文 |
@@ -164,6 +166,21 @@ workspaceRoots:
 切换支持两种模式：默认重置为新 session；`--keep-context` 使用 DSH session fork 在新 cwd 创建 child session，并复制旧上下文。fork 失败时不改变当前工作区。
 
 工作区 registry 会把 V1 配置工作区做兼容迁移；配置同 ID 条目始终优先，不保存飞书凭据。
+
+### V3 宿主 Workspace Registry
+
+当目标 profile 挂载并激活 DSH 原生 `workspaceRegistry` 时，可设置：
+
+```yaml
+workspaceBackend: host
+workspaceMigration: read-only
+```
+
+`host` 模式使用宿主生成的 Workspace ID、canonical path 和 CRUD API；宿主能力不可用或读写失败时直接报错，不回退写入 V2 local registry。`workspaceMigration: write` 会把 V2 ID 映射到 host ID，并将旧 `workspace-prefs.json` 备份为 `workspace-prefs.json.v1.bak`。映射文件保存于：
+
+    ~/.dsh-feishu-bridge/workspace-host-migration.json
+
+当前独立 Feishu headless profile 未必挂载 Workspace/Storage 组合；这种情况下应保持 `workspaceBackend: local`，`/feishu doctor` 会显示 `Workspace Registry: local/v2-fallback`。V3c 的 session attach、按 Workspace 分组 `/resume` 已在 bridge 中实现；Web/Feishu 同进程共享仍取决于 profile composition，需在挂载共享宿主服务后单独验收。
 
 ### 如何配置 allowlist 才能对话
 

@@ -18,9 +18,9 @@ function sourceLabel(source: "chat" | "default" | "legacy"): string {
   return "兼容旧 cwd";
 }
 
-export function formatWorkspaceList(ctx: CommandContext): string {
-  const current = ctx.manager.getEffectiveWorkspace(ctx.chatId);
-  const rows = ctx.manager.listWorkspaces();
+export async function formatWorkspaceList(ctx: CommandContext): Promise<string> {
+  const current = await ctx.manager.getEffectiveWorkspace(ctx.chatId);
+  const rows = await ctx.manager.listWorkspaces();
   const lines = [
     "当前工作区:",
     "- 名称: " + current.title,
@@ -58,19 +58,19 @@ export const workspaceCommand: CommandHandler = {
       if (ctx.client) {
         await ctx.client.sendCard(
           ctx.chatId,
-          buildWorkspaceCard(ctx.config.appSecret, ctx.chatId, ctx.manager.getEffectiveWorkspace(ctx.chatId), ctx.manager.listWorkspaces()),
+          buildWorkspaceCard(ctx.config.appSecret, ctx.chatId, await ctx.manager.getEffectiveWorkspace(ctx.chatId), await ctx.manager.listWorkspaces()),
           ctx.msgId,
         );
         return;
       }
-      return formatWorkspaceList(ctx);
+      return await formatWorkspaceList(ctx);
     }
 
     if (action === "add") {
       if (!canChange(ctx)) return "无权注册工作区：群聊需要在 workspaceAdminOpenIds 中配置你的 open_id。";
       const missing = requireParts(parts, 3, USAGE);
       if (missing) return missing;
-      const info = ctx.manager.addWorkspace(parts[1], parts[2]);
+      const info = await ctx.manager.addWorkspace(parts[1], parts[2]);
       return "已注册工作区：" + info.title + " [" + info.id + "]\n路径：" + info.path;
     }
 
@@ -78,7 +78,7 @@ export const workspaceCommand: CommandHandler = {
       if (!canChange(ctx)) return "无权删除工作区：群聊需要在 workspaceAdminOpenIds 中配置你的 open_id。";
       const missing = requireParts(parts, 2, USAGE);
       if (missing) return missing;
-      ctx.manager.removeWorkspace(parts[1]);
+      await ctx.manager.removeWorkspace(parts[1]);
       return "已删除运行时工作区：" + parts[1];
     }
 
@@ -86,7 +86,7 @@ export const workspaceCommand: CommandHandler = {
       if (!canChange(ctx)) return "无权重命名工作区：群聊需要在 workspaceAdminOpenIds 中配置你的 open_id。";
       const missing = requireParts(parts, 3, USAGE);
       if (missing) return missing;
-      const info = ctx.manager.renameWorkspace(parts[1], parts.slice(2).join(" "));
+      const info = await ctx.manager.renameWorkspace(parts[1], parts.slice(2).join(" "));
       return "已重命名工作区：" + info.id + " → " + info.title;
     }
 

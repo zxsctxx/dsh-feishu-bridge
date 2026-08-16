@@ -59,3 +59,11 @@ export interface TokenUsageStats {
   cacheRead: number;
   cacheWrite: number;
 }
+
+/** /resume 列表的持久化会话条目；workspace 字段仅 host 模式有归属时填充，未归属不出现。 */
+export interface PersistedSessionInfo {
+  id: string;
+  workspaceId?: string;
+  workspaceTitle?: string;
+  workspacePath?: string;
+}

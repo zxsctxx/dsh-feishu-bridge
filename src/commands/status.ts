@@ -14,7 +14,7 @@ export const statusCommand: CommandHandler = {
   async handle(ctx) {
     const pending = ctx.queues.pendingFor(ctx.chatId);
     const appId = ctx.config.appId ? `****${ctx.config.appId.slice(-4)}` : "未设置";
-    const status = ctx.manager.getStatus(ctx.chatId);
+    const status = await ctx.manager.getStatus(ctx.chatId);
     const usage = ctx.manager.getTokenUsage(ctx.chatId);
 
     let reply = `DSH 状态:\n- 飞书连接: ${ctx.client?.getStatus() ?? "未启动"}\n- App ID: ${appId}`;
@@ -61,7 +61,7 @@ export const feishuCommand: CommandHandler = {
       case "doctor": {
         const connected = ctx.client?.getStatus() === "connected";
         const cardkit = connected ? await ctx.client!.checkCardKitAvailability() : null;
-        return formatDoctor(runDoctor(ctx.config, connected, cardkit));
+        return formatDoctor(runDoctor(ctx.config, connected, cardkit, ctx.workspaceBackend));
       }
 
       case "status": {

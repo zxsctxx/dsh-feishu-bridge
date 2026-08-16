@@ -26,6 +26,15 @@ import { DshEventAdapter, type SettleHooks } from "./dsh/event-adapter.js";
 import { registerBridgeTools, type ToolDeps } from "./tools.js";
 import { dispatchCommand } from "./commands/index.js";
 import { buildWorkspaceCard, verifyWorkspaceCardPayload } from "./cardkit/workspace.js";
+import {
+  isWorkspaceRegistryLike,
+  DisabledWorkspaceBackend,
+  HostWorkspaceBackend,
+  workspaceBackendDiagnostic,
+  workspaceBackendMode,
+  asWorkspaceRegistryLike,
+  type WorkspaceBackendDiagnostic,
+} from "./dsh/workspace-backend.js";
 
 // ── Cordis 插件元数据 ──
 export const name = "feishu-bridge";
@@ -74,6 +83,31 @@ function createLogger(config: BridgeConfig): Logger {
 export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void> {
   const config = applyEnvOverrides(rawConfig);
   const logger = createLogger(config);
+  const requestedWorkspaceBackend = workspaceBackendMode(config.workspaceBackend);
+  let workspaceDiagnostic: WorkspaceBackendDiagnostic = workspaceBackendDiagnostic(requestedWorkspaceBackend);
+  const workspaceBackend = requestedWorkspaceBackend === "host"
+    ? new HostWorkspaceBackend()
+    : requestedWorkspaceBackend === "disabled"
+      ? new DisabledWorkspaceBackend()
+      : undefined;
+  const hostWorkspaceBackend = workspaceBackend instanceof HostWorkspaceBackend ? workspaceBackend : undefined;
+
+  // host 模式只等待宿主能力；服务缺失或等待期间都不回退到本地 V2 registry。
+  if (requestedWorkspaceBackend === "host") {
+    ctx.inject(["workspaceRegistry"], (hostCtx) => {
+      const registry = asWorkspaceRegistryLike(hostCtx.get("workspaceRegistry"));
+      hostWorkspaceBackend?.setRegistry(registry);
+      workspaceDiagnostic = workspaceBackendDiagnostic(requestedWorkspaceBackend, !!registry);
+      hostCtx.effect(
+        () => () => {
+          hostWorkspaceBackend?.setRegistry(undefined);
+          workspaceDiagnostic = workspaceBackendDiagnostic(requestedWorkspaceBackend);
+        },
+        "feishu workspace backend",
+      );
+    });
+  }
+
   const agents = ctx.agents;
 
   // 诊断：/preset 依赖的可选服务是否就绪（agent-presets 行由 profile bundle/patch 提供）
@@ -112,6 +146,11 @@ export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void
     config,
     logger,
     (agentCtx, chatId) => registerBridgeTools(agentCtx, toolDeps(chatId)),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    workspaceBackend,
   );
   const settleHooks: SettleHooks = {
     onSettled: async (chatId, phase) => {
@@ -243,7 +282,7 @@ export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void
       const payload = verifyWorkspaceCardPayload(config.appSecret, action.value, action.chatId);
       if (!manager.isWorkspaceCardAdmin(action.senderOpenId)) throw new Error("无权操作工作区卡片");
       if (payload.action === "list") {
-        await client?.sendCard(action.chatId, buildWorkspaceCard(config.appSecret, action.chatId, manager.getEffectiveWorkspace(action.chatId), manager.listWorkspaces()));
+        await client?.sendCard(action.chatId, buildWorkspaceCard(config.appSecret, action.chatId, await manager.getEffectiveWorkspace(action.chatId), await manager.listWorkspaces()));
         return;
       }
       if (payload.action === "use") {
@@ -442,6 +481,7 @@ export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void
         chatType,
         get client() { return client; },
         get config() { return config; },
+        get workspaceBackend() { return workspaceDiagnostic; },
         get streaming() { return streaming; },
         get clarify() { return clarify; },
         metrics,
