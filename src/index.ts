@@ -25,7 +25,7 @@ import { DshSessionManager } from "./dsh/session-manager.js";
 import { DshEventAdapter, type SettleHooks } from "./dsh/event-adapter.js";
 import { registerBridgeTools, type ToolDeps } from "./tools.js";
 import { dispatchCommand } from "./commands/index.js";
-import { buildWorkspaceCard, verifyWorkspaceCardPayload } from "./cardkit/workspace.js";
+import { buildWorkspaceCard, verifyWorkspaceCardPayload, WORKSPACE_RESET_OPTION } from "./cardkit/workspace.js";
 import {
   isWorkspaceRegistryLike,
   DisabledWorkspaceBackend,
@@ -276,7 +276,7 @@ export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void
     await activeClient.sendMessage(chatId, text);
   }
 
-  async function handleWorkspaceCardAction(action: { value: Record<string, unknown>; senderOpenId: string; chatId: string; messageId: string }): Promise<void> {
+  async function handleWorkspaceCardAction(action: { value: Record<string, unknown>; choice?: string; senderOpenId: string; chatId: string; messageId: string }): Promise<void> {
     try {
       if (!action.chatId) throw new Error("无法确认卡片所属 chat，请重新发送 /workspace");
       const payload = verifyWorkspaceCardPayload(config.appSecret, action.value, action.chatId);
@@ -285,7 +285,24 @@ export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void
         await client?.sendCard(action.chatId, buildWorkspaceCard(config.appSecret, action.chatId, await manager.getEffectiveWorkspace(action.chatId), await manager.listWorkspaces()));
         return;
       }
-      if (payload.action === "use") {
+      if (payload.action === "select") {
+        const workspaceId = action.choice;
+        if (!workspaceId) throw new Error("工作区卡片未选择工作区");
+        if (!manager.isIdleFor(action.chatId)) throw new Error("当前 chat 正在处理中，请等待完成或先执行 /stop");
+        if (workspaceId === WORKSPACE_RESET_OPTION) {
+          await prepareSessionControl(action.chatId);
+          const result = await manager.resetWorkspace(action.chatId);
+          await dismissWorkspaceCard(action.messageId, action.chatId, result.changed ? "已恢复默认工作区：" + result.workspace.title : "当前已经是默认工作区：" + result.workspace.title);
+          return;
+        }
+        const selected = (await manager.listWorkspaces()).find((row) => row.id === workspaceId && row.status === "available");
+        if (!selected) throw new Error("工作区不存在或目录不可用，请重新发送 /workspace");
+        await prepareSessionControl(action.chatId);
+        const result = await manager.switchWorkspace(action.chatId, workspaceId, "reset");
+        await dismissWorkspaceCard(action.messageId, action.chatId, result.changed ? "已切换工作区：" + result.workspace.title + "\n已创建新的会话，未复制旧上下文。" : "当前已经是工作区：" + result.workspace.title);
+        return;
+      }
+       if (payload.action === "use") {
         if (!payload.workspaceId) throw new Error("卡片缺少工作区 ID");
         if (!manager.isIdleFor(action.chatId)) throw new Error("当前 chat 正在处理中，请等待完成或先执行 /stop");
         await prepareSessionControl(action.chatId);

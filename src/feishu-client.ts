@@ -176,7 +176,7 @@ export class FeishuClient {
     | null = null;
   private onStatusChangeCallback: ((status: BridgeStatus) => void) | null = null;
   private onCardActionCallback: ((action: { clarifyId: string; choice: string; senderOpenId: string }) => void) | null = null;
-  private onWorkspaceActionCallback: ((action: { value: Record<string, unknown>; senderOpenId: string; chatId: string; messageId: string }) => void) | null = null;
+  private onWorkspaceActionCallback: ((action: { value: Record<string, unknown>; choice?: string; senderOpenId: string; chatId: string; messageId: string }) => void) | null = null;
 
   // Reaction 跟踪：chatId → { msgId, reactionId }
   private typingMessages: Map<string, { msgId: string; reactionId: string }> = new Map();
@@ -230,16 +230,16 @@ export class FeishuClient {
         "card.action.trigger": (data: any) => {
           const value = data?.action?.value;
           const parsed = typeof value === "string" ? (() => { try { return JSON.parse(value); } catch { return {}; } })() : (value ?? {});
-          const clarifyId = parsed.clarify_id ?? data?.action?.name;
-          // 下拉框（select_static）：选中值经 action.option 回传，元素 value 携带 clarify_id
+          const clarifyId = parsed.clarify_id ?? data?.action?.name; // action payload may be workspace
+          // 下拉框（select_static）：选中值经 action.option 回传，元素 value 携带业务 payload
           const choice = data?.action?.option ?? parsed.choice;
           const senderOpenId = data?.operator?.open_id ?? "";
-          if (typeof clarifyId === "string" && typeof choice === "string") {
+          if (parsed?.kind !== "workspace" && typeof clarifyId === "string" && typeof choice === "string") {
             this.onCardActionCallback?.({ clarifyId, choice, senderOpenId });
           } else if (parsed?.kind === "workspace") {
             const chatId = data?.context?.open_chat_id ?? data?.open_chat_id ?? "";
              const messageId = data?.context?.open_message_id ?? data?.open_message_id ?? "";
-            this.onWorkspaceActionCallback?.({ value: parsed, senderOpenId, chatId, messageId });
+            this.onWorkspaceActionCallback?.({ value: parsed, choice: typeof choice === "string" ? choice : undefined, senderOpenId, chatId, messageId });
           }
         },
       });
@@ -623,7 +623,7 @@ export class FeishuClient {
 
   setOnCardAction(cb: (action: { clarifyId: string; choice: string; senderOpenId: string }) => void): void { this.onCardActionCallback = cb; }
 
-  setOnWorkspaceAction(cb: (action: { value: Record<string, unknown>; senderOpenId: string; chatId: string; messageId: string }) => void): void { this.onWorkspaceActionCallback = cb; }
+  setOnWorkspaceAction(cb: (action: { value: Record<string, unknown>; choice?: string; senderOpenId: string; chatId: string; messageId: string }) => void): void { this.onWorkspaceActionCallback = cb; }
 
   // ─── 内部方法 ───────────────────────────────────────
 

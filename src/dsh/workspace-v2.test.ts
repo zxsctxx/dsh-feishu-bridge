@@ -53,17 +53,34 @@ describe("workspace card payload", () => {
     expect(() => verifyWorkspaceCardPayload("secret", { ...payload, workspaceId: "other" }, "chat-a", 1001)).toThrow("签名无效");
     expect(() => verifyWorkspaceCardPayload("secret", payload as unknown as Record<string, unknown>, "chat-b", 1001)).toThrow("不属于当前 chat");
     expect(() => verifyWorkspaceCardPayload("secret", payload as unknown as Record<string, unknown>, "chat-a", 700001001)).toThrow("已过期");
+    const select = makeWorkspaceCardPayload("secret", "chat-a", "select", { mode: "reset" }, 1000);
+    expect(verifyWorkspaceCardPayload("secret", select as unknown as Record<string, unknown>, "chat-a", 1001)).toMatchObject({ action: "select", mode: "reset" });
   });
 });
 
 describe("workspace card structure", () => {
-  it("为每个按钮生成唯一 name", () => {
+  it("使用澄清卡片式下拉选择，避免为每个工作区重复渲染路径和按钮", () => {
     const card: any = buildWorkspaceCard("secret", "chat", { id: "first", title: "First", path: "C:/first", status: "available", source: "default" }, [
       { id: "first", title: "First", path: "C:/first", status: "available" },
       { id: "second", title: "Second", path: "C:/second", status: "available" },
     ], 1000);
-    const names = card.body.elements.filter((element: any) => element.tag === "button").map((element: any) => element.name);
-    expect(new Set(names).size).toBe(names.length);
+    const select = card.body.elements.find((element: any) => element.tag === "select_static");
+    expect(select).toMatchObject({
+      element_id: "workspace-select",
+      placeholder: { tag: "plain_text", content: "选择工作区…" },
+      value: { kind: "workspace", action: "select", chatId: "chat", mode: "reset" },
+    });
+    expect(select.options).toEqual([
+      { value: "__workspace_reset__", text: { tag: "plain_text", content: "A. 恢复默认工作区" } },
+      { value: "first", text: { tag: "plain_text", content: "B. First" } },
+      { value: "second", text: { tag: "plain_text", content: "C. Second" } },
+    ]);
+    const markdown = card.body.elements.filter((element: any) => element.tag === "markdown");
+    expect(markdown[0]).toMatchObject({ content: "请选择工作区，当前工作区：First" });
+    expect(markdown[1]).toMatchObject({ content: "当前路径：C:/first" });
+    expect(markdown[2]).toMatchObject({ content: "切换工作区默认会重置上下文，可通过 `/workspace use <id> --keep-context` 保留上下文切换" });
+    expect(markdown[3]).toMatchObject({ content: "**A. 恢复默认工作区** · 使用配置中的默认工作区" });
+    expect(markdown.map((element: any) => element.content.join?.() ?? element.content).join("\n")).not.toContain("C:/second");
   });
 });
 
