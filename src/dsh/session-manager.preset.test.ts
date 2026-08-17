@@ -16,7 +16,6 @@ function baseConfig(): BridgeConfig {
     appId: "cli_app",
     appSecret: "secret",
     domain: "feishu",
-    cwd: process.cwd(),
     registerBridgeTools: true,
     flushIntervalMs: 200,
     showThinking: false,
@@ -45,19 +44,31 @@ function baseConfig(): BridgeConfig {
   };
 }
 
+function makeHostBackend(path = "/workspace"): WorkspaceBackend {
+  const row = { id: "host-default", title: "Default", path, status: "available" as const };
+  return {
+    mode: "host",
+    list: async () => [row],
+    get: async (id: string) => (id === row.id ? row : undefined),
+    resolveByPath: async () => undefined,
+    create: async () => row,
+    delete: async () => true,
+    rename: async () => row,
+    attachSession: async () => {},
+  };
+}
+
 function makeManager(
   configOverrides: Partial<BridgeConfig> = {},
   agentsOverrides: Record<string, unknown> = {},
   ctxGet?: (key: string) => unknown,
-  workspaceBackend?: WorkspaceBackend,
+  workspaceBackend: WorkspaceBackend = makeHostBackend(),
 ) {
   const config = { ...baseConfig(), ...configOverrides };
   const dir = mkdtempSync(join(tmpdir(), "session-manager-preset-"));
   const presetPrefsPath = join(dir, "preset-prefs.json");
   const workspacePrefsPath = join(dir, "workspace-prefs.json");
   const sessionOwnersPath = join(dir, "session-owners.json");
-  const workspaceRegistryPath = join(dir, "workspace-registry.json");
-  const workspaceMigrationPath = join(dir, "workspace-migration.json");
   const presets: any = {
     defaultId: "minimal",
     list: async () => [
@@ -85,7 +96,7 @@ function makeManager(
     ...agentsOverrides,
   };
   const logger: any = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} };
-  const manager = new DshSessionManager(ctx, agents, config, logger, () => {}, presetPrefsPath, workspacePrefsPath, sessionOwnersPath, workspaceRegistryPath, workspaceBackend, workspaceMigrationPath);
+  const manager = new DshSessionManager(ctx, agents, config, logger, () => {}, workspaceBackend, presetPrefsPath, workspacePrefsPath, sessionOwnersPath);
   return { manager, dir, config };
 }
 
@@ -233,8 +244,8 @@ describe("getStatus（/status 数据源）", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("无活跃会话时仍显示派生 sessionId、偏好预设与配置工作区（重启后直接 /status）", async () => {
-    const { manager, dir } = makeManager({ cwd: "/workspace" });
+  it("无活跃会话时仍显示派生 sessionId、偏好预设与有效工作区（重启后直接 /status）", async () => {
+    const { manager, dir } = makeManager();
     manager.setChatPreset("oc_a", "code");
     const status = await manager.getStatus("oc_a");
     expect(status.active).toBe(false);
@@ -273,7 +284,7 @@ describe("listPersistedSessions Workspace DTO 映射（V3c）", () => {
       key === "sessionPersistence" ? { list: async () => headers } : undefined;
   }
 
-  it("local/V2 模式不填充 workspace 字段，保持纯 id 列表", async () => {
+  it("宿主工作区无 membership 时不填充 workspace 字段，保持纯 id 列表", async () => {
     const headers: Array<{ id: string; cwd?: string }> = [];
     const { manager, dir } = makeManager({}, {}, persistenceCtx(headers));
     const ownedId = manager.sessionIdFor("oc_a"); // 确定性派生 id，等于 chat 归属

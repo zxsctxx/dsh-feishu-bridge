@@ -1,8 +1,8 @@
 import type { WorkspaceInfo } from "./workspace.js";
 
-/** V3 工作区后端选择；默认 local 保持 V2 行为。 */
-export type WorkspaceBackendMode = "local" | "host" | "disabled";
-export type WorkspaceBackendState = "local" | "host" | "disabled" | "unavailable";
+/** V3 工作区后端：固定使用宿主 workspaceRegistry。 */
+export type WorkspaceBackendMode = "host";
+export type WorkspaceBackendState = "host" | "unavailable";
 
 export interface WorkspaceBackendDiagnostic {
   requested: WorkspaceBackendMode;
@@ -50,55 +50,9 @@ export class WorkspaceBackendError extends Error {
   }
 }
 
-/** V2 本地后端的异步门面；local 实现仍由 WorkspaceResolver 维护。 */
-export class LocalWorkspaceBackend implements WorkspaceBackend {
-  readonly mode = "local" as const;
-
-  constructor(private readonly resolver: LocalWorkspaceResolverLike) {}
-
-  async list(): Promise<WorkspaceInfo[]> {
-    return this.resolver.list();
-  }
-
-  async get(id: string): Promise<WorkspaceInfo | undefined> {
-    try {
-      return await this.resolver.registeredWorkspace(id, false);
-    } catch {
-      return undefined;
-    }
-  }
-
-  async resolveByPath(path: string): Promise<WorkspaceInfo | undefined> {
-    const id = await this.resolver.workspaceIdForPath(path);
-    if (!id || id === "legacy") return undefined;
-    return this.get(id);
-  }
-
-  async create(path: string, title?: string): Promise<WorkspaceInfo> {
-    return this.resolver.addRuntime("host-created", path, title);
-  }
-
-  async delete(id: string): Promise<boolean> {
-    try {
-      await this.resolver.removeRuntime(id);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  async rename(id: string, title: string): Promise<WorkspaceInfo> {
-    return this.resolver.renameRuntime(id, title);
-  }
-
-  async attachSession(_workspaceId: string, _sessionId: string): Promise<void> {
-    // V2 local registry 没有宿主 session membership。
-  }
-}
-
 /**
  * 宿主 Registry 的 CRUD 适配器。宿主服务不存在或尚未激活时直接报错，
- * 不会把任何写操作降级到 V2 local registry。
+ * 不会回退到任何本地/V2 工作区。
  */
 export class HostWorkspaceBackend implements WorkspaceBackend {
   readonly mode = "host" as const;
@@ -160,114 +114,15 @@ export class HostWorkspaceBackend implements WorkspaceBackend {
   }
 
   private requireRegistry(): WorkspaceRegistryLike {
-    if (!this.registry) throw new WorkspaceBackendError("workspaceRegistry 宿主服务不可用，host 模式已 fail-closed");
+    if (!this.registry) throw new WorkspaceBackendError("workspaceRegistry 宿主服务不可用，已 fail-closed");
     return this.registry;
   }
 }
 
-/** 显式 host 模式缺少宿主能力时的 fail-closed 后端，禁止静默回退到 local。 */
-export class UnavailableWorkspaceBackend implements WorkspaceBackend {
-  readonly mode = "host" as const;
-
-  async list(): Promise<WorkspaceInfo[]> {
-    throw unavailableError();
-  }
-
-  async get(_id: string): Promise<WorkspaceInfo | undefined> {
-    throw unavailableError();
-  }
-
-  async resolveByPath(_path: string): Promise<WorkspaceInfo | undefined> {
-    throw unavailableError();
-  }
-
-  async create(_path: string, _title?: string): Promise<WorkspaceInfo> {
-    throw unavailableError();
-  }
-
-  async delete(_id: string): Promise<boolean> {
-    throw unavailableError();
-  }
-
-  async rename(_id: string, _title: string): Promise<WorkspaceInfo> {
-    throw unavailableError();
-  }
-
-  async attachSession(_workspaceId: string, _sessionId: string): Promise<void> {
-    throw unavailableError();
-  }
-}
-
-export class DisabledWorkspaceBackend implements WorkspaceBackend {
-  readonly mode = "disabled" as const;
-
-  async list(): Promise<WorkspaceInfo[]> {
-    return [];
-  }
-
-  async get(_id: string): Promise<WorkspaceInfo | undefined> {
-    return undefined;
-  }
-
-  async resolveByPath(_path: string): Promise<WorkspaceInfo | undefined> {
-    return undefined;
-  }
-
-  async create(_path: string, _title?: string): Promise<WorkspaceInfo> {
-    throw new WorkspaceBackendError("Workspace 功能已禁用");
-  }
-
-  async delete(_id: string): Promise<boolean> {
-    return false;
-  }
-
-  async rename(_id: string, _title: string): Promise<WorkspaceInfo> {
-    throw new WorkspaceBackendError("Workspace 功能已禁用");
-  }
-
-  async attachSession(_workspaceId: string, _sessionId: string): Promise<void> {
-    throw new WorkspaceBackendError("Workspace 功能已禁用");
-  }
-}
-
-export interface LocalWorkspaceResolverLike {
-  list(): Promise<WorkspaceInfo[]>;
-  workspaceIdForPath(path: string): Promise<string | "legacy" | undefined>;
-  registeredWorkspace(workspaceId: string, requireAvailable?: boolean): Promise<WorkspaceInfo>;
-  addRuntime(workspaceId: string, path: string, title?: string): Promise<WorkspaceInfo>;
-  removeRuntime(workspaceId: string): Promise<void>;
-  renameRuntime(workspaceId: string, title: string): Promise<WorkspaceInfo>;
-}
-
-export function workspaceBackendMode(value: unknown): WorkspaceBackendMode {
-  if (value === "host" || value === "disabled") return value;
-  return "local";
-}
-
-export function workspaceBackendDiagnostic(
-  requested: WorkspaceBackendMode,
-  hostAvailable = false,
-): WorkspaceBackendDiagnostic {
-  if (requested === "host") {
-    return hostAvailable
-      ? { requested, state: "host", message: "Workspace Registry: host/shared" }
-      : { requested, state: "unavailable", message: "Workspace Registry: host-unavailable/fail-closed" };
-  }
-  if (requested === "disabled") {
-    return { requested, state: "disabled", message: "Workspace Registry: disabled/legacy" };
-  }
-  return { requested, state: "local", message: "Workspace Registry: local/v2-fallback" };
-}
-
-export function createWorkspaceBackend(
-  requested: WorkspaceBackendMode,
-  resolver?: LocalWorkspaceResolverLike,
-  registry?: WorkspaceRegistryLike,
-): WorkspaceBackend {
-  if (requested === "disabled") return new DisabledWorkspaceBackend();
-  if (requested === "host") return registry ? new HostWorkspaceBackend(registry) : new UnavailableWorkspaceBackend();
-  if (!resolver) throw new WorkspaceBackendError("local 模式需要 WorkspaceResolver");
-  return new LocalWorkspaceBackend(resolver);
+export function workspaceBackendDiagnostic(hostAvailable: boolean): WorkspaceBackendDiagnostic {
+  return hostAvailable
+    ? { requested: "host", state: "host", message: "Workspace Registry: host/shared" }
+    : { requested: "host", state: "unavailable", message: "Workspace Registry: host-unavailable/fail-closed" };
 }
 
 async function toWorkspaceInfo(entity: WorkspaceEntityLike): Promise<WorkspaceInfo> {
@@ -279,10 +134,6 @@ async function toWorkspaceInfo(entity: WorkspaceEntityLike): Promise<WorkspaceIn
     status: status === "ok" ? "available" : "missing",
     ...(entity.sessionIds ? { sessionIds: [...entity.sessionIds] } : {}),
   };
-}
-
-function unavailableError(): WorkspaceBackendError {
-  return new WorkspaceBackendError("workspaceRegistry 宿主服务不可用，host 模式已 fail-closed");
 }
 
 export function isWorkspaceRegistryLike(value: unknown): value is WorkspaceRegistryLike {

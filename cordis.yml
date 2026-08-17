@@ -65,17 +65,12 @@
     domain: ${FEISHU_DOMAIN:-feishu}
     provider: deepseek
     model: deepseek-chat
-    cwd: ${DSH_CWD:-.}
-    # V1 工作区示例（按本机路径配置；生产放 profile 私有 patch 配置）
-    # workspaces:
-    #   - id: bridge
-    #     title: Feishu Bridge
-    #     path: C:/projects/dsh-feishu-bridge
-    # defaultWorkspace: bridge
+    # 默认工作区：宿主工作区标题或 UUID；未设置时回退到第一个可用宿主工作区。
+    # defaultWorkspace: Workspace
     # workspaceAdminOpenIds: [ou_xxx]
-    # V2 运行时注册允许的根目录（为空时禁止 /workspace add）
+    # 运行时注册工作区允许的根目录（为空时禁止 /workspace add）
     # workspaceRoots:
-    #   - C:/projects
+    #   - /home/zxsctxx
     accessPolicy: allowlist
     allowedOpenIds: []
     allowedChatIds: []

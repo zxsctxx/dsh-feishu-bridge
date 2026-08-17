@@ -12,10 +12,8 @@ const USAGE = [
   "/workspace rename <id> <title>     重命名运行时工作区",
 ].join("\n");
 
-function sourceLabel(source: "chat" | "default" | "legacy"): string {
-  if (source === "chat") return "当前 chat 选择";
-  if (source === "default") return "配置默认";
-  return "兼容旧 cwd";
+function sourceLabel(source: "chat" | "default"): string {
+  return source === "chat" ? "当前 chat 选择" : "默认";
 }
 
 export async function formatWorkspaceList(ctx: CommandContext): Promise<string> {

@@ -23,9 +23,9 @@ import type { BridgeConfig } from "../config.js";
 import type { Logger } from "../types.js";
 import { ModelResolver, type ModelRoute } from "./model-resolver.js";
 import { PresetPrefsStore } from "./preset-prefs.js";
-import { DisabledWorkspaceResolver, HostWorkspaceResolver } from "./workspace-host.js";
+import { HostWorkspaceResolver } from "./workspace-host.js";
 import type { WorkspaceBackend } from "./workspace-backend.js";
-import { WorkspaceResolver, type EffectiveWorkspace, type WorkspaceController, type WorkspaceInfo } from "./workspace.js";
+import { type EffectiveWorkspace, type WorkspaceController, type WorkspaceInfo } from "./workspace.js";
 import { SessionOwnershipStore } from "./session-owners.js";
 import { streamMetricsFromEvents } from "../session/usage.js";
 import type {
@@ -53,7 +53,7 @@ export class DshSessionManager {
   private readonly modelResolver: ModelResolver;
   /** 预设偏好持久化（per-chat + 全局默认），运行时命令可改 */
   private readonly presetPrefs: PresetPrefsStore;
-  /** V1 工作区注册与 per-chat 选择 */
+  /** 宿主工作区与 per-chat 选择 */
   private readonly workspaces: WorkspaceController;
   /** /resume 的 per-chat session 归属索引 */
   private readonly sessionOwners: SessionOwnershipStore;
@@ -82,44 +82,26 @@ export class DshSessionManager {
     private readonly logger: Logger,
     /** 创建/恢复 agent 时的额外 scoped setup（注册飞书工具等；chatId 为该 agent 所属会话） */
     private readonly setupExtra: (agentCtx: Context, chatId: string) => void = () => {},
+    /** 宿主 Workspace 后端（V3-only）。 */
+    workspaceBackend: WorkspaceBackend,
     /** 预设偏好文件路径覆盖（仅供测试注入临时路径，避免污染用户真实偏好） */
     presetPrefsPath?: string,
     /** 工作区偏好文件路径覆盖（仅供测试注入临时路径） */
     workspacePrefsPath?: string,
     /** session 归属文件路径覆盖（仅供测试注入临时路径） */
     sessionOwnersPath?: string,
-    /** workspace registry 文件路径覆盖（仅供测试注入临时路径） */
-    workspaceRegistryPath?: string,
-    /** V3 host backend；未提供时保持 V2 local。 */
-    workspaceBackend?: WorkspaceBackend,
-    /** host alias 映射文件路径覆盖（仅供测试注入临时路径） */
-    workspaceMigrationPath?: string,
   ) {
     this.modelResolver = new ModelResolver(ctx, config, logger);
     this.presetPrefs = new PresetPrefsStore(
       config.debug ? (msg) => this.logger?.debug(msg) : undefined,
       presetPrefsPath,
     );
-    const localResolver = new WorkspaceResolver(
+    this.workspaces = new HostWorkspaceResolver(
       config,
+      workspaceBackend,
       workspacePrefsPath,
       (message) => this.logger.warn(message),
-      workspaceRegistryPath,
-      workspaceBackend?.mode !== "host",
-      workspaceBackend?.mode === "host",
     );
-    this.workspaces = workspaceBackend?.mode === "host"
-      ? new HostWorkspaceResolver(
-          config,
-          workspaceBackend,
-          workspacePrefsPath,
-          localResolver,
-          (message) => this.logger.warn(message),
-          workspaceMigrationPath,
-        )
-      : workspaceBackend?.mode === "disabled"
-        ? new DisabledWorkspaceResolver(config)
-        : localResolver;
     this.sessionOwners = new SessionOwnershipStore(sessionOwnersPath);
   }
 
@@ -988,9 +970,8 @@ export class DshSessionManager {
 
   /**
    * 列出当前 chat 已登记的持久化会话；未知归属默认不展示。
-   * DTO 为可扩展的 PersistedSessionInfo；host 模式根据 workspaces.list() 的
-   * sessionIds 补充 Workspace 归属，未归属条目不携带 workspace 字段
-   * （local/V2 模式 workspaces 不填 sessionIds，保持原有纯 id 语义）。
+   * 根据 workspaces.list() 的 sessionIds 补充 Workspace 归属，
+   * 未归属条目不携带 workspace 字段。
    */
   async listPersistedSessions(chatId: string): Promise<PersistedSessionInfo[]> {
     let ownedSessions: Array<{ id: string }>;

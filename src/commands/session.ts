@@ -10,9 +10,8 @@ import type { PersistedSessionInfo } from "../dsh/types.js";
 import type { CommandContext, CommandHandler } from "./types.js";
 
 /**
- * 无参数 /resume 的列表渲染：host DTO 有 Workspace 归属时按组输出，
+ * 无参数 /resume 的列表渲染：宿主 Workspace 有归属时按组输出，
  * 未归属显示“未分组”；序号仍对应扁平 session 列表。
- * local/V2 模式（无 workspaceId）保持原有扁平格式。
  */
 export function formatResumeList(sessions: PersistedSessionInfo[], current: string): string {
   const flat = (session: PersistedSessionInfo, index: number): string => {

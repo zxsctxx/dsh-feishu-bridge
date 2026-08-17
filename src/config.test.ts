@@ -9,7 +9,6 @@ function baseConfig(): BridgeConfig {
     appId: "",
     appSecret: "",
     domain: "feishu",
-    cwd: process.cwd(),
     registerBridgeTools: true,
     flushIntervalMs: 200,
     showThinking: false,

@@ -1,10 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  createWorkspaceBackend,
   HostWorkspaceBackend,
-  UnavailableWorkspaceBackend,
   workspaceBackendDiagnostic,
-  workspaceBackendMode,
 } from "./workspace-backend.js";
 
 const hostRegistry = {
@@ -20,12 +17,7 @@ const hostRegistry = {
   delete: async () => true,
 };
 
-describe("V3 workspace backend", () => {
-  it("默认模式保持 V2 local fallback，且不依赖宿主服务", () => {
-    expect(workspaceBackendMode(undefined)).toBe("local");
-    expect(workspaceBackendDiagnostic("local")).toMatchObject({ state: "local", message: "Workspace Registry: local/v2-fallback" });
-  });
-
+describe("V3 workspace backend（host-only）", () => {
   it("host 适配器只读 DTO，不按 workspaceRoots 过滤宿主条目", async () => {
     const backend = new HostWorkspaceBackend(hostRegistry);
     await expect(backend.list()).resolves.toEqual([
@@ -33,7 +25,7 @@ describe("V3 workspace backend", () => {
       { id: "host-two", title: "host-two", path: "C:/host-two", status: "available" },
     ]);
     await expect(backend.resolveByPath("C:/host-one")).resolves.toMatchObject({ id: "host-one" });
-    expect(workspaceBackendDiagnostic("host", true).message).toBe("Workspace Registry: host/shared");
+    expect(workspaceBackendDiagnostic(true).message).toBe("Workspace Registry: host/shared");
   });
 
   it("host CRUD 返回真实宿主 ID，并透传重命名与删除", async () => {
@@ -85,10 +77,9 @@ describe("V3 workspace backend", () => {
     expect(targetAttach).toHaveBeenCalledWith("session-1");
   });
 
-  it("host 能力缺失时 fail closed，不静默回退 local", async () => {
-    const backend = createWorkspaceBackend("host");
-    expect(backend).toBeInstanceOf(UnavailableWorkspaceBackend);
-    await expect(backend.list()).rejects.toThrow("host 模式已 fail-closed");
-    expect(workspaceBackendDiagnostic("host").state).toBe("unavailable");
+  it("宿主能力缺失时 fail closed，不静默回退任何本地后端", async () => {
+    const backend = new HostWorkspaceBackend();
+    await expect(backend.list()).rejects.toThrow("fail-closed");
+    expect(workspaceBackendDiagnostic(false).state).toBe("unavailable");
   });
 });

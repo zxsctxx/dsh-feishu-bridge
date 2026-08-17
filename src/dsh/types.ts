@@ -49,7 +49,7 @@ export interface SessionStatus {
   cwd?: string;
   workspaceId?: string;
   workspaceTitle?: string;
-  workspaceSource?: "chat" | "default" | "legacy";
+  workspaceSource?: "chat" | "default";
 }
 
 /** token 用量统计（/cost 用） */

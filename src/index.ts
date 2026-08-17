@@ -27,11 +27,8 @@ import { registerBridgeTools, type ToolDeps } from "./tools.js";
 import { dispatchCommand } from "./commands/index.js";
 import { buildWorkspaceCard, verifyWorkspaceCardPayload, WORKSPACE_RESET_OPTION } from "./cardkit/workspace.js";
 import {
-  isWorkspaceRegistryLike,
-  DisabledWorkspaceBackend,
   HostWorkspaceBackend,
   workspaceBackendDiagnostic,
-  workspaceBackendMode,
   asWorkspaceRegistryLike,
   type WorkspaceBackendDiagnostic,
 } from "./dsh/workspace-backend.js";
@@ -83,30 +80,21 @@ function createLogger(config: BridgeConfig): Logger {
 export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void> {
   const config = applyEnvOverrides(rawConfig);
   const logger = createLogger(config);
-  const requestedWorkspaceBackend = workspaceBackendMode(config.workspaceBackend);
-  let workspaceDiagnostic: WorkspaceBackendDiagnostic = workspaceBackendDiagnostic(requestedWorkspaceBackend);
-  const workspaceBackend = requestedWorkspaceBackend === "host"
-    ? new HostWorkspaceBackend()
-    : requestedWorkspaceBackend === "disabled"
-      ? new DisabledWorkspaceBackend()
-      : undefined;
-  const hostWorkspaceBackend = workspaceBackend instanceof HostWorkspaceBackend ? workspaceBackend : undefined;
-
-  // host 模式只等待宿主能力；服务缺失或等待期间都不回退到本地 V2 registry。
-  if (requestedWorkspaceBackend === "host") {
-    ctx.inject(["workspaceRegistry"], (hostCtx) => {
-      const registry = asWorkspaceRegistryLike(hostCtx.get("workspaceRegistry"));
-      hostWorkspaceBackend?.setRegistry(registry);
-      workspaceDiagnostic = workspaceBackendDiagnostic(requestedWorkspaceBackend, !!registry);
-      hostCtx.effect(
-        () => () => {
-          hostWorkspaceBackend?.setRegistry(undefined);
-          workspaceDiagnostic = workspaceBackendDiagnostic(requestedWorkspaceBackend);
-        },
-        "feishu workspace backend",
-      );
-    });
-  }
+  const workspaceBackend = new HostWorkspaceBackend();
+  let workspaceDiagnostic: WorkspaceBackendDiagnostic = workspaceBackendDiagnostic(false);
+  // V3-only：固定使用宿主 workspaceRegistry，服务缺失时 fail-closed，不回退任何本地/V2。
+  ctx.inject(["workspaceRegistry"], (hostCtx) => {
+    const registry = asWorkspaceRegistryLike(hostCtx.get("workspaceRegistry"));
+    workspaceBackend.setRegistry(registry);
+    workspaceDiagnostic = workspaceBackendDiagnostic(!!registry);
+    hostCtx.effect(
+      () => () => {
+        workspaceBackend.setRegistry(undefined);
+        workspaceDiagnostic = workspaceBackendDiagnostic(false);
+      },
+      "feishu workspace backend",
+    );
+  });
 
   const agents = ctx.agents;
 
@@ -146,10 +134,6 @@ export async function apply(ctx: Context, rawConfig: BridgeConfig): Promise<void
     config,
     logger,
     (agentCtx, chatId) => registerBridgeTools(agentCtx, toolDeps(chatId)),
-    undefined,
-    undefined,
-    undefined,
-    undefined,
     workspaceBackend,
   );
   const settleHooks: SettleHooks = {

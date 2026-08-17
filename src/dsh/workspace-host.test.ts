@@ -1,174 +1,132 @@
-import { describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { describe, expect, it, vi } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { BridgeConfig } from "../config.js";
 import type { WorkspaceBackend } from "./workspace-backend.js";
-import { WorkspaceError, WorkspaceResolver } from "./workspace.js";
-import { DisabledWorkspaceResolver, HostWorkspaceResolver, WorkspaceHostMigrationStore } from "./workspace-host.js";
-import { WorkspacePrefsStore } from "./workspace-prefs.js";
+import { WorkspaceError } from "./workspace.js";
+import { HostWorkspaceResolver } from "./workspace-host.js";
 
-describe("WorkspaceHostMigrationStore", () => {
-  it("以 version/mode/mappings 原子持久化并可恢复", () => {
-    const root = mkdtempSync(join(tmpdir(), "workspace-host-migration-"));
-    const path = join(root, "mapping.json");
-    const store = new WorkspaceHostMigrationStore(path);
-    store.set("legacy", { hostId: "host-1", canonicalPath: join(root, "project") });
+function baseConfig(root: string, overrides: Partial<BridgeConfig> = {}): BridgeConfig {
+  return {
+    appId: "app",
+    appSecret: "secret",
+    domain: "feishu",
+    defaultWorkspace: "Workspace",
+    workspaceRoots: [root],
+    registerBridgeTools: false,
+    flushIntervalMs: 200,
+    showThinking: false,
+    printStrategy: "delay",
+    printStep: 4,
+    panelExpanded: false,
+    streamingPanelExpanded: false,
+    maxToolSteps: 20,
+    maxThinkingRounds: 20,
+    maxAnswerElementChars: 30000,
+    maxReasoningChars: 3500,
+    maxToolDetailChars: 500,
+    maxToolOutputChars: 800,
+    printFrequencyMs: 70,
+    accessPolicy: "open",
+    allowedChatIds: [],
+    allowedOpenIds: [],
+    requireMentionInGroup: false,
+    clarifyTimeoutSec: 300,
+    taskTimeoutSec: 900,
+    sameChatBusyPolicy: "queue",
+    sessionIdleTimeout: 1800000,
+    maxQueue: 20,
+    processingTimeoutMs: 120000,
+    debug: false,
+    ...overrides,
+  };
+}
 
-    const restored = new WorkspaceHostMigrationStore(path);
-    expect(restored.get("legacy")).toEqual({ hostId: "host-1", canonicalPath: join(root, "project") });
-    expect(restored.findAlias("host-1")).toBe("legacy");
-    expect(JSON.parse(readFileSync(path, "utf8"))).toMatchObject({ version: 1, mode: "host" });
-    rmSync(root, { recursive: true, force: true });
-  });
+function makeBackend(rows: Array<{ id: string; title: string; path: string; status?: "available" | "missing" }>): WorkspaceBackend {
+  return {
+    mode: "host",
+    list: async () => rows.map((row) => ({ ...row, status: row.status ?? "available" })),
+    get: async (id: string) => rows.find((row) => row.id === id),
+    resolveByPath: async (path: string) => rows.find((row) => row.path === path),
+    create: async (path: string, title?: string) => ({ id: "created", title: title ?? "created", path, status: "available" as const }),
+    delete: async () => true,
+    rename: async (id: string, title: string) => {
+      const row = rows.find((item) => item.id === id);
+      if (!row) throw new Error("not found");
+      return { ...row, title };
+    },
+    attachSession: async () => {},
+  };
+}
 
-  it("映射文件损坏时 fail closed，不覆盖原文件", () => {
-    const root = mkdtempSync(join(tmpdir(), "workspace-host-migration-corrupt-"));
-    const path = join(root, "mapping.json");
-    writeFileSync(path, "{bad", "utf8");
-    const store = new WorkspaceHostMigrationStore(path);
-    expect(() => store.get("legacy")).toThrow(WorkspaceError);
-    expect(readFileSync(path, "utf8")).toBe("{bad");
-    rmSync(root, { recursive: true, force: true });
-  });
-
-  it("版本或模式不匹配时拒绝写入", () => {
-    const root = mkdtempSync(join(tmpdir(), "workspace-host-migration-version-"));
-    const path = join(root, "mapping.json");
-    mkdirSync(root, { recursive: true });
-    writeFileSync(path, JSON.stringify({ version: 1, mode: "local", mappings: {} }), "utf8");
-    const store = new WorkspaceHostMigrationStore(path);
-    expect(() => store.list()).toThrow("版本无效");
-    rmSync(root, { recursive: true, force: true });
-  });
-
-  it("V2 chat selection 改写 host ID 前保留 v1 备份", () => {
-    const root = mkdtempSync(join(tmpdir(), "workspace-host-prefs-"));
-    const path = join(root, "workspace-prefs.json");
-    const prefs = new WorkspacePrefsStore(path);
-    prefs.set("app:chat", "legacy");
-    expect(prefs.migrateIds(new Map([["legacy", "host-1"]]))).toBe(true);
-    expect(new WorkspacePrefsStore(path).get("app:chat")).toBe("host-1");
-    expect(readFileSync(path + ".v1.bak", "utf8")).toContain("legacy");
-    expect(prefs.migrateIds(new Map([["legacy", "host-1"]]))).toBe(false);
-    rmSync(root, { recursive: true, force: true });
-  });
-
-  it("host 映射损坏不阻止 Resolver 构造，但首次读取 fail-closed", async () => {
-    const root = mkdtempSync(join(tmpdir(), "workspace-host-lazy-error-"));
-    const mappingPath = join(root, "mapping.json");
-    writeFileSync(mappingPath, "{bad", "utf8");
-    const config = { appId: "app", cwd: root, workspaceRoots: [root], workspaces: [], workspaceMigration: "read-only" } as BridgeConfig;
-    const local = new WorkspaceResolver(config, join(root, "prefs.json"), undefined, join(root, "registry.json"), false, true);
-    const backend = { mode: "host", list: async () => [], get: async () => undefined, resolveByPath: async () => undefined, create: async () => { throw new Error("unused"); }, delete: async () => false, rename: async () => { throw new Error("unused"); } } as unknown as WorkspaceBackend;
-    const resolver = new HostWorkspaceResolver(config, backend, join(root, "prefs.json"), local, undefined, mappingPath);
-    await expect(resolver.list()).rejects.toThrow("映射文件损坏");
-    rmSync(root, { recursive: true, force: true });
-  });
-
-  it("host add 继续受 workspaceRoots 约束", async () => {
-    const root = mkdtempSync(join(tmpdir(), "workspace-host-roots-"));
-    const allowed = join(root, "allowed");
-    const outside = join(root, "outside");
-    mkdirSync(allowed);
-    mkdirSync(outside);
-    const config = { appId: "app", cwd: root, workspaceRoots: [allowed], workspaces: [], workspaceMigration: "disabled" } as BridgeConfig;
-    const local = new WorkspaceResolver(config, join(root, "prefs.json"), undefined, join(root, "registry.json"), false, true);
-    const backend = { mode: "host", list: async () => [], get: async () => undefined, resolveByPath: async () => undefined, create: async (path: string) => ({ id: "host-1", title: "Host", path, status: "available" as const }), delete: async () => true, rename: async () => { throw new Error("unused"); } } as unknown as WorkspaceBackend;
-    const resolver = new HostWorkspaceResolver(config, backend, join(root, "prefs.json"), local, undefined, join(root, "mapping.json"));
-    await expect(resolver.addRuntime("inside", allowed)).resolves.toMatchObject({ id: "host-1" });
-    await expect(resolver.addRuntime("duplicate", allowed)).rejects.toThrow("其他 alias");
-    await expect(resolver.addRuntime("outside", outside)).rejects.toThrow("workspaceRoots");
-    rmSync(root, { recursive: true, force: true });
-  });
-
-  it("host 模式支持用工作区标题解析 defaultWorkspace / registeredWorkspace", async () => {
+describe("HostWorkspaceResolver（V3-only）", () => {
+  it("支持用工作区标题解析 defaultWorkspace / registeredWorkspace", async () => {
     const root = mkdtempSync(join(tmpdir(), "workspace-host-title-"));
-    const rows = [
-      { id: "host-1", title: "Workspace", path: join(root, "workspace"), status: "available" as const },
-      { id: "host-2", title: "external", path: join(root, "external"), status: "available" as const },
-    ];
-    const backend = {
-      mode: "host",
-      list: async () => rows,
-      get: async (id: string) => rows.find((row) => row.id === id),
-      resolveByPath: async () => undefined,
-      create: async () => { throw new Error("unused"); },
-      delete: async () => true,
-      rename: async () => { throw new Error("unused"); },
-      attachSession: async () => {},
-    } as unknown as WorkspaceBackend;
-    const config = {
-      appId: "app",
-      cwd: root,
-      workspaceRoots: [],
-      workspaces: [],
-      workspaceMigration: "disabled",
-      defaultWorkspace: "Workspace",
-    } as BridgeConfig;
-    const local = new WorkspaceResolver(config, join(root, "prefs.json"), undefined, join(root, "registry.json"), false, true);
-    const resolver = new HostWorkspaceResolver(config, backend, join(root, "prefs.json"), local, undefined, join(root, "mapping.json"));
+    const backend = makeBackend([
+      { id: "host-1", title: "Workspace", path: join(root, "workspace") },
+      { id: "host-2", title: "external", path: join(root, "external") },
+    ]);
+    const resolver = new HostWorkspaceResolver(baseConfig(root), backend, join(root, "prefs.json"));
 
     await expect(resolver.getEffective("chat")).resolves.toMatchObject({ id: "host-1", title: "Workspace", source: "default" });
     await expect(resolver.registeredWorkspace("external")).resolves.toMatchObject({ id: "host-2", title: "external" });
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("disabled Resolver 只保留 legacy cwd 并拒绝 CRUD", async () => {
-    const root = mkdtempSync(join(tmpdir(), "workspace-disabled-"));
-    const config = { appId: "app", cwd: root } as BridgeConfig;
-    const resolver = new DisabledWorkspaceResolver(config);
-    await expect(resolver.list()).resolves.toMatchObject([{ id: "default", path: root }]);
-    await expect(resolver.addRuntime("x", root)).rejects.toThrow("已禁用");
-    await expect(resolver.select("chat", "default")).rejects.toThrow("已禁用");
+  it("未配置 defaultWorkspace 时回退到第一个宿主工作区", async () => {
+    const root = mkdtempSync(join(tmpdir(), "workspace-host-fallback-"));
+    const backend = makeBackend([
+      { id: "host-1", title: "Workspace", path: join(root, "workspace") },
+      { id: "host-2", title: "external", path: join(root, "external") },
+    ]);
+    const resolver = new HostWorkspaceResolver(baseConfig(root, { defaultWorkspace: undefined }), backend, join(root, "prefs.json"));
+
+    await expect(resolver.getEffective("chat")).resolves.toMatchObject({ id: "host-1", title: "Workspace" });
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("并发 list 共享同一次迁移，不重复 create；失败后可重试且不 fallback local", async () => {
-    const root = mkdtempSync(join(tmpdir(), "workspace-host-mutex-"));
-    mkdirSync(join(root, "legacy"));
-    let createCalls = 0;
-    let failCreate = true;
-    const backend = {
-      mode: "host",
-      list: async () => [],
-      get: async () => undefined,
-      resolveByPath: async () => {
-        await new Promise((resolve) => setTimeout(resolve, 20));
-        return undefined;
-      },
-      create: async (path: string, title?: string) => {
-        createCalls += 1;
-        await new Promise((resolve) => setTimeout(resolve, 20));
-        if (failCreate) throw new Error("host storage failure");
-        return { id: "host-1", title: title ?? "legacy", path, status: "available" as const };
-      },
-      delete: async () => true,
-      rename: async () => { throw new Error("unused"); },
-      attachSession: async () => {},
-    } as unknown as WorkspaceBackend;
-    const config = {
-      appId: "app",
-      cwd: root,
-      workspaceRoots: [root],
-      workspaces: [{ id: "legacy", title: "Legacy", path: join(root, "legacy") }],
-      workspaceMigration: "write",
-    } as BridgeConfig;
-    const local = new WorkspaceResolver(config, join(root, "prefs.json"), undefined, join(root, "registry.json"), false, true);
-    const resolver = new HostWorkspaceResolver(config, backend, join(root, "prefs.json"), local, undefined, join(root, "mapping.json"));
+  it("addRuntime 受 workspaceRoots 约束，并复用已存在的宿主路径", async () => {
+    const root = mkdtempSync(join(tmpdir(), "workspace-host-roots-"));
+    const allowed = join(root, "allowed");
+    const outside = join(root, "outside");
+    mkdirSync(allowed);
+    mkdirSync(outside);
+    const backend = makeBackend([
+      { id: "host-1", title: "allowed", path: allowed },
+    ]);
+    const resolver = new HostWorkspaceResolver(baseConfig(root, { workspaceRoots: [allowed] }), backend, join(root, "prefs.json"));
 
-    // 失败路径：并发调用共享同一次迁移运行，只尝试一次 create，全部失败
-    const failed = await Promise.allSettled([resolver.list(), resolver.list(), resolver.list()]);
-    expect(failed.every((result) => result.status === "rejected")).toBe(true);
-    expect(createCalls).toBe(1);
+    await expect(resolver.addRuntime("dup", allowed)).resolves.toMatchObject({ id: "host-1" });
+    await expect(resolver.addRuntime("outside", outside)).rejects.toThrow("workspaceRoots");
+    rmSync(root, { recursive: true, force: true });
+  });
 
-    // 修复后重试：一次成功，后续并发复用同一已解决的 promise，不重复 create
-    failCreate = false;
-    const rows = await Promise.all([resolver.list(), resolver.list(), resolver.list()]);
-    expect(createCalls).toBe(2);
-    expect(rows[0]).toEqual([]);
-    expect(rows[1]).toEqual([]);
-    expect(rows[2]).toEqual([]);
+  it("removeRuntime 拒绝删除仍被 chat 使用的工作区", async () => {
+    const root = mkdtempSync(join(tmpdir(), "workspace-host-remove-"));
+    const backend = makeBackend([
+      { id: "host-1", title: "Workspace", path: join(root, "workspace") },
+    ]);
+    const resolver = new HostWorkspaceResolver(baseConfig(root), backend, join(root, "prefs.json"));
+    await resolver.select("chat", "host-1");
+
+    await expect(resolver.removeRuntime("host-1")).rejects.toThrow(WorkspaceError);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("陈旧 chat 选择会被清理并回退默认工作区", async () => {
+    const root = mkdtempSync(join(tmpdir(), "workspace-host-stale-"));
+    const backend = makeBackend([
+      { id: "host-1", title: "Workspace", path: join(root, "workspace") },
+    ]);
+    const warn = vi.fn();
+    const resolver = new HostWorkspaceResolver(baseConfig(root), backend, join(root, "prefs.json"), warn);
+    await resolver.select("chat", "host-1");
+    // 模拟宿主工作区被删除后，选择已失效。
+    const emptyBackend = makeBackend([]);
+    const resolver2 = new HostWorkspaceResolver(baseConfig(root), emptyBackend, join(root, "prefs.json"), warn);
+    await expect(resolver2.getEffective("chat")).rejects.toThrow("宿主没有可用工作区");
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("cleared stale workspace preference"));
     rmSync(root, { recursive: true, force: true });
   });
 });

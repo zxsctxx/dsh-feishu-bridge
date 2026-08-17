@@ -5,20 +5,12 @@
 - insert:
     - id: feishu-bridge
       name: dsh-feishu-bridge
-      # V1 工作区配置示例（请按本机路径填写，勿提交敏感配置）：
+      # 工作区配置示例（V3-only，使用宿主 workspaceRegistry，请按本机路径填写）：
       # config:
-      #   workspaces:
-      #     - id: bridge
-      #       title: Feishu Bridge
-      #       path: C:/projects/dsh-feishu-bridge
-      #     - id: dsh
-      #       title: DeepSeek Harness
-      #       path: C:/projects/deepseek-harness
-      #   defaultWorkspace: bridge
+      #   defaultWorkspace: Workspace
       #   workspaceAdminOpenIds: [ou_xxx]
-      #   # V2 运行时注册允许的根目录（为空时禁止 /workspace add）
       #   workspaceRoots:
-      #     - C:/projects
+      #     - /home/zxsctxx
 
 # 可选：agent-presets 服务行，提供 /preset 命令的预设列表与切换能力。
 # 不插也能跑，但 /preset 会提示「宿主未组合 agentPresets」。

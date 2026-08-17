@@ -17,12 +17,8 @@ function baseConfig(root: string): BridgeConfig {
     appId: "cli_test",
     appSecret: "secret",
     domain: "feishu",
-    cwd: root,
-    workspaces: [],
     defaultWorkspace: "host-1",
     workspaceRoots: [root],
-    workspaceBackend: "host",
-    workspaceMigration: "disabled",
     registerBridgeTools: false,
     flushIntervalMs: 200,
     showThinking: false,
@@ -78,8 +74,6 @@ function makeManager(backend: WorkspaceBackend, agentsOverrides: Record<string, 
   const presetPrefsPath = join(root, "preset-prefs.json");
   const workspacePrefsPath = join(root, "workspace-prefs.json");
   const sessionOwnersPath = join(root, "session-owners.json");
-  const workspaceRegistryPath = join(root, "workspace-registry.json");
-  const workspaceMigrationPath = join(root, "workspace-host-migration.json");
   const ctx: any = { get: () => undefined };
   const agents: any = {
     get: () => undefined,
@@ -94,12 +88,10 @@ function makeManager(backend: WorkspaceBackend, agentsOverrides: Record<string, 
     config,
     logger,
     () => {},
+    backend,
     presetPrefsPath,
     workspacePrefsPath,
     sessionOwnersPath,
-    workspaceRegistryPath,
-    backend,
-    workspaceMigrationPath,
   );
   return { manager, dir: root };
 }

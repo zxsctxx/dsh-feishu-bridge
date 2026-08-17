@@ -21,13 +21,6 @@ export interface BridgeFeishuConfig {
   verificationToken?: string;
 }
 
-/** V1 命名工作区定义；path 只存放在 profile 私有配置中。 */
-export interface WorkspaceDefinition {
-  id: string;
-  title?: string;
-  path: string;
-}
-
 export interface BridgeConfig {
   // ── 飞书 ──
   appId: string;
@@ -40,19 +33,12 @@ export interface BridgeConfig {
   provider?: string;
   model?: string;
   preset?: string;
-  cwd: string;
-  /** V1 已注册的命名工作区；未配置时继续使用 cwd。 */
-  workspaces?: WorkspaceDefinition[];
-  /** 默认工作区 ID；优先级低于 per-chat 选择。 */
+  /** 默认工作区：宿主工作区标题或 UUID；优先级低于 per-chat 选择。 */
   defaultWorkspace?: string;
   /** 可切换工作区的用户；群聊未配置时不允许切换。 */
   workspaceAdminOpenIds?: string[];
-  /** V2 运行时注册工作区允许使用的根目录。 */
+  /** 运行时注册工作区允许使用的根目录。 */
   workspaceRoots?: string[];
-  /** V3 工作区后端；默认 local 保持 V2 行为，host 缺失时 fail-closed。 */
-  workspaceBackend?: "local" | "host" | "disabled";
-  /** 是否允许后续 V3 迁移阶段写入宿主 Registry。 */
-  workspaceMigration?: "disabled" | "read-only" | "write";
   /** 是否把飞书工具（send_to_feishu 等）注册进共享 agent 的 scoped 工具集 */
   registerBridgeTools: boolean;
 
@@ -95,12 +81,6 @@ const FooterSchema = Schema.object({
   ).default(DEFAULT_FOOTER_LINES),
 }) as unknown as Schema<FooterConfig>;
 
-const WorkspaceSchema = Schema.object({
-  id: Schema.string(),
-  title: Schema.string(),
-  path: Schema.string(),
-}) as unknown as Schema<WorkspaceDefinition>;
-
 export const ConfigSchema: Schema<BridgeConfig> = Schema.object({
   // ── 飞书 ──
   appId: Schema.string().default("").description("飞书 App ID（也可用 FEISHU_APP_ID）"),
@@ -113,13 +93,9 @@ export const ConfigSchema: Schema<BridgeConfig> = Schema.object({
   provider: Schema.string().description("LLM provider 名称（缺省用宿主默认）"),
   model: Schema.string().description("模型名称（缺省用宿主默认）"),
   preset: Schema.string().description("Agent preset id（缺省用宿主默认预设）"),
-  cwd: Schema.string().default(process.cwd()).description("Agent 工作目录"),
-  workspaces: Schema.array(WorkspaceSchema).default([]).description("V1 命名工作区列表"),
-  defaultWorkspace: Schema.string().description("默认工作区 ID"),
+  defaultWorkspace: Schema.string().description("默认工作区：宿主工作区标题或 UUID"),
   workspaceAdminOpenIds: Schema.array(Schema.string()).default([]).description("可切换工作区的用户 open_id"),
-  workspaceRoots: Schema.array(Schema.string()).default([]).description("V2 运行时工作区注册允许的根目录"),
-  workspaceBackend: Schema.union(["local", "host", "disabled"]).default("local").description("工作区后端：local、host 或 disabled"),
-  workspaceMigration: Schema.union(["disabled", "read-only", "write"]).default("disabled").description("V3 工作区迁移写入策略"),
+  workspaceRoots: Schema.array(Schema.string()).default([]).description("运行时注册工作区允许使用的根目录"),
   registerBridgeTools: Schema.boolean().default(true).description("是否注册飞书工具（send_to_feishu 等）到共享 agent"),
 
   // ── 流式卡片 ──
@@ -207,8 +183,6 @@ export function applyEnvOverrides(config: BridgeConfig, env: NodeJS.ProcessEnv =
     ["clarifyTimeoutSec", envNumber(env.FEISHU_CLARIFY_TIMEOUT_SEC)],
     ["taskTimeoutSec", envNumber(env.FEISHU_TASK_TIMEOUT_SEC)],
     ["sameChatBusyPolicy", env.FEISHU_SAME_CHAT_BUSY_POLICY],
-    ["workspaceBackend", env.FEISHU_WORKSPACE_BACKEND],
-    ["workspaceMigration", env.FEISHU_WORKSPACE_MIGRATION],
   ];
 
   for (const [key, value] of overlays) {
@@ -243,23 +217,6 @@ export function validateConfig(config: BridgeConfig): ConfigProblem[] {
       field: "allowedOpenIds",
       message: "accessPolicy=allowlist 但白名单为空，所有消息都会被拒绝",
     });
-  }
-
-  const workspaces = config.workspaces ?? [];
-  const ids = new Set<string>();
-  for (const workspace of workspaces) {
-    if (!workspace.id.trim()) {
-      problems.push({ field: "workspaces", message: "工作区 id 不能为空" });
-    } else if (ids.has(workspace.id)) {
-      problems.push({ field: "workspaces", message: "工作区 id 重复：" + workspace.id });
-    }
-    ids.add(workspace.id);
-    if (!workspace.path.trim()) {
-      problems.push({ field: "workspaces." + workspace.id + ".path", message: "工作区 path 不能为空" });
-    }
-  }
-  if (config.defaultWorkspace && !ids.has(config.defaultWorkspace)) {
-    problems.push({ field: "defaultWorkspace", message: "默认工作区不存在：" + config.defaultWorkspace });
   }
 
   return problems;

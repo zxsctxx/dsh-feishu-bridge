@@ -1,11 +1,7 @@
 import type { FeishuConfig } from "../types.js";
 import { DEFAULT_ACCESS_POLICY } from "../access/policy.js";
 import { PRODUCT_NAME, PRODUCT_VERSION } from "../version.js";
-import {
-  workspaceBackendDiagnostic,
-  workspaceBackendMode,
-  type WorkspaceBackendDiagnostic,
-} from "../dsh/workspace-backend.js";
+import type { WorkspaceBackendDiagnostic } from "../dsh/workspace-backend.js";
 
 export interface DoctorFinding { level: "error" | "warning" | "ok"; message: string; }
 export function runDoctor(
@@ -26,7 +22,7 @@ export function runDoctor(
   else if (cardkitAvailable === false || typeof cardkitAvailable === "string") findings.push({ level: "error", message: `CardKit 探针失败${typeof cardkitAvailable === "string" ? `：${cardkitAvailable}` : ""}` });
   else if (cardkitAvailable === true) findings.push({ level: "ok", message: "CardKit 创建探针通过" });
 
-  const workspace = workspaceDiagnostic ?? workspaceBackendDiagnostic(workspaceBackendMode(config.workspaceBackend));
+  const workspace = workspaceDiagnostic ?? { requested: "host", state: "unavailable", message: "Workspace Registry: host-unavailable/fail-closed" } satisfies WorkspaceBackendDiagnostic;
   findings.push({
     level: workspace.state === "unavailable" ? "error" : "ok",
     message: workspace.message,
