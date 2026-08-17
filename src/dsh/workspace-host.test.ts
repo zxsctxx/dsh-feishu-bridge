@@ -82,6 +82,38 @@ describe("WorkspaceHostMigrationStore", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  it("host 模式支持用工作区标题解析 defaultWorkspace / registeredWorkspace", async () => {
+    const root = mkdtempSync(join(tmpdir(), "workspace-host-title-"));
+    const rows = [
+      { id: "host-1", title: "Workspace", path: join(root, "workspace"), status: "available" as const },
+      { id: "host-2", title: "external", path: join(root, "external"), status: "available" as const },
+    ];
+    const backend = {
+      mode: "host",
+      list: async () => rows,
+      get: async (id: string) => rows.find((row) => row.id === id),
+      resolveByPath: async () => undefined,
+      create: async () => { throw new Error("unused"); },
+      delete: async () => true,
+      rename: async () => { throw new Error("unused"); },
+      attachSession: async () => {},
+    } as unknown as WorkspaceBackend;
+    const config = {
+      appId: "app",
+      cwd: root,
+      workspaceRoots: [],
+      workspaces: [],
+      workspaceMigration: "disabled",
+      defaultWorkspace: "Workspace",
+    } as BridgeConfig;
+    const local = new WorkspaceResolver(config, join(root, "prefs.json"), undefined, join(root, "registry.json"), false, true);
+    const resolver = new HostWorkspaceResolver(config, backend, join(root, "prefs.json"), local, undefined, join(root, "mapping.json"));
+
+    await expect(resolver.getEffective("chat")).resolves.toMatchObject({ id: "host-1", title: "Workspace", source: "default" });
+    await expect(resolver.registeredWorkspace("external")).resolves.toMatchObject({ id: "host-2", title: "external" });
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it("disabled Resolver 只保留 legacy cwd 并拒绝 CRUD", async () => {
     const root = mkdtempSync(join(tmpdir(), "workspace-disabled-"));
     const config = { appId: "app", cwd: root } as BridgeConfig;

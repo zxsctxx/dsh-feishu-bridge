@@ -297,7 +297,13 @@ export class HostWorkspaceResolver implements WorkspaceController {
     const direct = await this.backend.get(idOrAlias);
     if (direct) return this.addAlias(direct);
     const mapping = this.migration.get(idOrAlias);
-    if (!mapping) return undefined;
+    if (!mapping) {
+      // 便捷查找：defaultWorkspace / /workspace use 也可直接写宿主工作区标题。
+      // 标题不是唯一键，存在重名时取宿主列表顺序中的第一个。
+      const rows = await this.backend.list();
+      const byTitle = rows.find((row) => row.title === idOrAlias);
+      return byTitle ? this.addAlias(byTitle) : undefined;
+    }
     const mapped = await this.backend.get(mapping.hostId);
     if (!mapped) return undefined;
     if (!this.matchesPath(mapped.path, mapping.canonicalPath)) throw new WorkspaceError("宿主 Workspace 映射路径不一致：" + idOrAlias);
